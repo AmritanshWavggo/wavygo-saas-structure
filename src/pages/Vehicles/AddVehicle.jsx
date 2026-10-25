@@ -44,6 +44,7 @@ function AddVehicle() {
   const [documentType, setDocumentType] = useState('RC')
   const [submitError, setSubmitError] = useState('')
 
+  // Clear only the edited field's validation message while preserving other step errors.
   function update(field, value) {
     setData((current) => ({ ...current, [field]: value }))
     setErrors((current) => ({ ...current, [field]: '' }))
@@ -51,6 +52,7 @@ function AddVehicle() {
 
   function validateStep() {
     const nextErrors = {}
+    // Validate the current wizard step only, so users can advance without filling later sections.
     if (step === 0) {
       if (!data.makeModel.trim()) nextErrors.makeModel = 'Enter the vehicle make and model.'
       if (!data.registration.trim()) nextErrors.registration = 'Enter the registration number.'
@@ -71,6 +73,7 @@ function AddVehicle() {
   function handleFile(event, kind) {
     const file = event.target.files?.[0]
     if (!file) return
+    // Object URLs serve local previews only and are revoked when the selection is replaced or removed.
     if (kind === 'photo') {
       if (photo?.preview) URL.revokeObjectURL(photo.preview)
       setPhoto({ name: file.name, preview: file.type.startsWith('image/') ? URL.createObjectURL(file) : '', file })

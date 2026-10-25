@@ -20,6 +20,7 @@ import {
 
 function VehicleArt({ vehicle, small = false }) {
   const [imageError, setImageError] = useState(false)
+  // Only render known browser-loadable URL schemes; fall back to the vehicle icon on failure.
   const imageUrl = typeof vehicle.image === 'string' && /^(https?:|data:image\/|blob:)/i.test(vehicle.image)
 
   return (
@@ -32,6 +33,7 @@ function VehicleArt({ vehicle, small = false }) {
 }
 
 function isListedOnWavyGo(vehicle) {
+  // Prefer an explicit API-shaped flag; legacy demo records use status as their listing signal.
   const listingValue = vehicle.show_on_wavygo ?? vehicle.showOnWavyGo
   return typeof listingValue === 'boolean' ? listingValue : vehicle.status === 'Online'
 }
@@ -48,6 +50,7 @@ function Vehicles() {
   const [page, setPage] = useState(1)
   const pageSize = 8
 
+  // Apply the tab, type, availability, and text query together before slicing the current page.
   const filteredVehicles = useMemo(() => {
     const query = search.trim().toLowerCase()
     return vehicles.filter((vehicle) => {
@@ -72,6 +75,7 @@ function Vehicles() {
     const vehicle = vehicles.find((item) => item.id === id)
     if (!vehicle) return
     const listed = isListedOnWavyGo(vehicle)
+    // This is a session-only preview update, not a persisted WavyGo listing change.
     updateRecord('vehicles', id, { show_on_wavygo: !listed })
     setPage(1)
     setNotice('Preview only: no vehicle listing API is configured, so this change is not saved to WavyGo.')

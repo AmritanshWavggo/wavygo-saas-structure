@@ -25,6 +25,7 @@ function formatDate(date) {
 function getRentalDays(start, end, startTime, endTime) {
   if (!start || !end || !startTime || !endTime) return 1
   const duration = new Date(`${end}T${endTime}`).getTime() - new Date(`${start}T${startTime}`).getTime()
+  // Charge for any started rental day, while never allowing a valid booking to total zero days.
   return Math.max(1, Math.ceil(duration / 86_400_000))
 }
 
@@ -33,6 +34,7 @@ function AddBooking() {
   const location = useLocation()
   const offlineMode = Boolean(location.state?.offline)
   const { vehicles: allVehicles, customers } = useDemoData()
+  // Rented and maintenance vehicles are excluded from booking choices in the demo workspace.
   const vehicles = allVehicles.filter((vehicle) => vehicle.availability === 'Available')
   const today = formatDate(new Date())
   const tomorrow = formatDate(new Date(Date.now() + 86_400_000))
@@ -52,6 +54,7 @@ function AddBooking() {
   const rentalDays = getRentalDays(rental.startDate, rental.endDate, rental.pickupTime, rental.returnTime)
   const dailyPrice = Number(selectedVehicle?.price || 0)
   const baseAmount = dailyPrice * rentalDays
+  // Clamp the manual discount to [0, base amount] so the estimate cannot go negative.
   const discountAmount = Math.min(baseAmount, Math.max(0, Number(rental.discount) || 0))
   const totalAmount = baseAmount - discountAmount
 
@@ -68,6 +71,7 @@ function AddBooking() {
     const nextErrors = {}
     if (step === 0 && !selectedVehicleId) nextErrors.vehicle = 'Select a vehicle to continue.'
     if (step === 1) {
+      // New customers require both identity fields; email remains optional but must be well formed.
       if (customerMode === 'existing' && !selectedCustomerId) nextErrors.selectedCustomer = 'Choose a customer or add a new one.'
       if (customerMode === 'new') {
         if (!customer.name.trim()) nextErrors.name = 'Enter the customer’s full name.'
@@ -78,6 +82,7 @@ function AddBooking() {
       }
     }
     if (step === 2) {
+      // Compare full pickup/return timestamps rather than dates so same-day rentals are checked correctly.
       if (!rental.startDate) nextErrors.startDate = 'Select a pickup date.'
       if (!rental.endDate) nextErrors.endDate = 'Select a return date.'
       if (rental.startDate && rental.endDate && rental.pickupTime && rental.returnTime && new Date(`${rental.endDate}T${rental.returnTime}`) <= new Date(`${rental.startDate}T${rental.pickupTime}`)) nextErrors.endDate = 'Return must be after pickup.'
@@ -93,6 +98,7 @@ function AddBooking() {
   }
 
   function makeBooking() {
+    // Keep this explicit until a booking service exists; preview data must not look submitted.
     setSubmitError('Booking could not be submitted: no booking API is configured. No customer or booking data has been saved.')
   }
 
