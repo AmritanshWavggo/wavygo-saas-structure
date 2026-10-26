@@ -48,6 +48,7 @@ function Topbar({ onOpenMobileSidebar }) {
     [query],
   )
 
+  // Close any open popover when interaction moves outside the header or Escape is pressed.
   useEffect(() => {
     function handlePointerDown(event) {
       if (!headerRef.current?.contains(event.target)) setMenu('')
@@ -71,6 +72,7 @@ function Topbar({ onOpenMobileSidebar }) {
 
   function handleSearchKey(event) {
     if (event.key === 'Escape') setMenu('')
+    // Enter follows the first filtered destination; ArrowDown moves focus into the result list.
     if (event.key === 'Enter' && matches[0]) goToSearchResult(matches[0])
     if (event.key === 'ArrowDown' && matches.length) {
       event.preventDefault()

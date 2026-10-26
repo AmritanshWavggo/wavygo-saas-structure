@@ -57,6 +57,7 @@ function LoginPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [notice, setNotice] = useState('')
 
+  // Validate locally because this demo has no authentication endpoint to accept credentials.
   function validateForm() {
     const nextErrors = {}
     const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -81,6 +82,7 @@ function LoginPage() {
 
     if (!validateForm()) return
 
+    // Simulate the pending state for feedback without transmitting or retaining credentials.
     setIsSubmitting(true)
     window.setTimeout(() => {
       setIsSubmitting(false)

@@ -170,6 +170,7 @@ export function DataTable({ columns, rows, emptyTitle = 'Nothing to show yet', e
     )
   }
 
+  // Reusable tables use record IDs when present and an index fallback for generic rows.
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[760px] text-left text-sm">
@@ -287,6 +288,7 @@ export function Field({ label, error, className = '', ...props }) {
 }
 
 export function BarChart({ data, label = 'Chart', height = 220, color = '#059669' }) {
+  // Scale all values against the largest point so the chart uses the same vertical range.
   const max = Math.max(...data.map((point) => point.value), 1)
   const points = data.map((point, index) => ({
     ...point,
@@ -328,6 +330,7 @@ export function BarChart({ data, label = 'Chart', height = 220, color = '#059669
 }
 
 export function ComparisonChart({ data, label = 'Revenue compared with expenses' }) {
+  // Both series share one scale so their relative values remain visually comparable.
   const maximum = Math.max(...data.flatMap((point) => [point.revenue, point.expenses]), 1)
   const getCoordinates = (key) =>
     data.map((point, index) => ({
