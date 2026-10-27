@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.db.mongodb import ensure_vehicle_indexes
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 
@@ -13,6 +14,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    """Run one-time startup tasks (indexes, etc.)."""
+    ensure_vehicle_indexes()
 
 
 @app.get("/health")
