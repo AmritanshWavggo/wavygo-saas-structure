@@ -1,10 +1,27 @@
+from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.db.mongodb import create_mongo_client, get_database
 
-app = FastAPI(title=settings.app_name, version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    mongo_client = create_mongo_client()
+    app.state.mongo_client = mongo_client
+    app.state.database = get_database(mongo_client) if mongo_client is not None else None
+    try:
+        yield
+    finally:
+        if mongo_client is not None:
+            mongo_client.close()
+
+
+app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

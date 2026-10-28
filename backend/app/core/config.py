@@ -1,3 +1,4 @@
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -7,6 +8,8 @@ class Settings(BaseSettings):
     mongodb_uri: str | None = None
     mongodb_database: str = "wavygo_vendor"
     frontend_origin: str = "http://localhost:5173"
+    jwt_secret_key: SecretStr | None = None
+    jwt_access_token_minutes: int = Field(default=30, ge=1, le=1440)
 
     model_config = SettingsConfigDict(
         env_file=".env",
