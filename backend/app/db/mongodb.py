@@ -27,20 +27,15 @@ def get_database(client: MongoClient | None = None) -> Database | None:
 
 def ensure_indexes() -> None:
     """
-    Create required indexes on the vehicles collection.
+    Create required indexes on all collections (tenants, users, refresh_tokens, vehicles, customers).
 
-    Called once at application startup.  Idempotent — if the index already
+    Called once at application startup. Idempotent — if the index already
     exists with the same name and options, PyMongo is a no-op.
-
-    Index created:
-        uq_registration_number — sparse unique index on ``registrationNumber``
-        (camelCase alias actually stored in MongoDB).
-        Sparse so that documents without the field are not rejected.
     """
     db = get_database()
     if db is None:
         logger.warning(
-            "MongoDB not configured — skipping vehicle index creation. "
+            "MongoDB not configured — skipping index creation. "
             "Set MONGODB_URI in your environment."
         )
         return
@@ -64,13 +59,24 @@ def ensure_indexes() -> None:
             partialFilterExpression={"deletedAt": {"$type": "null"}, "registrationNumber": {"$type": "string"}},
             name="uq_vehicle_tenant_registration_active",
         )
+        customers = db["customers"]
+        customers.create_index(
+            [("tenantId", ASCENDING), ("deletedAt", ASCENDING), ("createdAt", ASCENDING)],
+            name="ix_customers_tenant_deleted_created",
+        )
+        customers.create_index(
+            [("tenantId", ASCENDING), ("phone", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"deletedAt": {"$type": "null"}, "phone": {"$type": "string"}},
+            name="uq_customer_tenant_phone_active",
+        )
         logger.info("Database security indexes are ready.")
     except (DuplicateKeyError, OperationFailure, PyMongoError) as exc:
         # OperationFailure code 85 = index already exists with different options.
-        # DuplicateKeyError = existing data already has duplicate registrationNumber values.
+        # DuplicateKeyError = existing data already has duplicate registrationNumber / phone values.
         logger.error(
             "Could not create database indexes: %s. Run scripts.migrate_vehicle_tenant --dry-run "
-            "and resolve duplicate registrationNumber values.",
+            "and resolve duplicate values.",
             exc,
         )
         raise RuntimeError("Database indexes could not be created; refusing to start.") from exc
