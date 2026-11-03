@@ -53,7 +53,7 @@ def validate_rc_format(rc: str) -> bool:
     return bool(_RC_PATTERN.match(rc))
 
 
-def check_rc_duplicate(rc: str, db_collection: Any) -> bool:
+def check_rc_duplicate(rc: str, db_collection: Any, tenant_id: Any) -> bool:
     """
     Check whether *rc* already exists in the vehicles collection.
 
@@ -72,7 +72,7 @@ def check_rc_duplicate(rc: str, db_collection: Any) -> bool:
     -------
     True if a duplicate is found, False otherwise.
     """
-    existing = db_collection.find_one({"registrationNumber": rc})
+    existing = db_collection.find_one({"registrationNumber": rc, "tenantId": tenant_id, "deletedAt": None})
     return existing is not None
 
 

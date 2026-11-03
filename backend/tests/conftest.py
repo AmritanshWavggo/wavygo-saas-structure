@@ -3,8 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 import re
 
+import mongomock
+import mongomock.filtering
 import pytest
 from bson import ObjectId
+
+# Ensure mongomock supports MongoDB $type: "null"
+mongomock.filtering.TYPE_MAP["null"] = lambda v: v is None
 
 from app.modules.vehicles import router as vehicles_router
 
@@ -34,13 +39,18 @@ class FakeCollection:
     @staticmethod
     def _matches(document: dict, query: dict) -> bool:
         if "$or" in query:
-            return any(FakeCollection._matches(document, item) for item in query["$or"])
+            if not any(FakeCollection._matches(document, item) for item in query["$or"]):
+                return False
         for key, expected in query.items():
+            if key == "$or":
+                continue
             value = document.get(key)
             if isinstance(expected, dict):
                 if "$ne" in expected and value == expected["$ne"]:
                     return False
                 if "$in" in expected and value not in expected["$in"]:
+                    return False
+                if "$gt" in expected and (value is None or value <= expected["$gt"]):
                     return False
                 if "$regex" in expected and not re.search(
                     expected["$regex"], str(value or ""), re.IGNORECASE if expected.get("$options") == "i" else 0
@@ -71,6 +81,14 @@ class FakeCollection:
             if self._matches(document, query):
                 document.update(deepcopy(update.get("$set", {})))
                 return
+
+    def find_one_and_update(self, query: dict, update: dict):
+        for document in self.documents:
+            if self._matches(document, query):
+                old = deepcopy(document)
+                document.update(deepcopy(update.get("$set", {})))
+                return old
+        return None
 
     def delete_one(self, query: dict):
         self.documents = [d for d in self.documents if not self._matches(d, query)]

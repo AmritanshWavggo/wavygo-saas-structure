@@ -25,7 +25,7 @@ def get_database(client: MongoClient | None = None) -> Database | None:
     return client[settings.mongodb_database]
 
 
-def ensure_vehicle_indexes() -> None:
+def ensure_indexes() -> None:
     """
     Create required indexes on the vehicles collection.
 
@@ -45,25 +45,35 @@ def ensure_vehicle_indexes() -> None:
         )
         return
 
-    collection = db["vehicles"]
-    index_name = "uq_registration_number"
     try:
-        collection.create_index(
-            [(("registrationNumber"), ASCENDING)],
+        db["tenants"].create_index([("slug", ASCENDING)], unique=True, name="uq_tenant_slug")
+        db["users"].create_index([("email", ASCENDING)], unique=True, name="uq_user_email")
+        db["users"].create_index([("tenantId", ASCENDING), ("role", ASCENDING)], name="ix_users_tenant_role")
+        db["refresh_tokens"].create_index([("tokenHash", ASCENDING)], unique=True, name="uq_refresh_token_hash")
+        db["refresh_tokens"].create_index([("userId", ASCENDING), ("expiresAt", ASCENDING)], name="ix_refresh_user_expiry")
+        db["refresh_tokens"].create_index([("expiresAt", ASCENDING)], expireAfterSeconds=0, name="ttl_refresh_expiry")
+        vehicles = db["vehicles"]
+        existing_indexes = {index["name"] for index in vehicles.list_indexes()}
+        if "uq_registration_number" in existing_indexes:
+            vehicles.drop_index("uq_registration_number")
+            logger.info("Replaced legacy global vehicle registration index.")
+        vehicles.create_index([("tenantId", ASCENDING), ("deletedAt", ASCENDING)], name="ix_vehicles_tenant_deleted")
+        vehicles.create_index(
+            [("tenantId", ASCENDING), ("registrationNumber", ASCENDING)],
             unique=True,
-            sparse=True,
-            name=index_name,
+            partialFilterExpression={"deletedAt": {"$type": "null"}, "registrationNumber": {"$type": "string"}},
+            name="uq_vehicle_tenant_registration_active",
         )
-        logger.info("Vehicle index '%s' is ready.", index_name)
+        logger.info("Database security indexes are ready.")
     except (DuplicateKeyError, OperationFailure, PyMongoError) as exc:
         # OperationFailure code 85 = index already exists with different options.
         # DuplicateKeyError = existing data already has duplicate registrationNumber values.
         logger.error(
-            "Could not create vehicle index '%s'. "
-            "This usually means the vehicles collection already contains duplicate "
-            "registrationNumber values that must be resolved before the index can be "
-            "applied.  The application will continue running without the unique constraint. "
-            "Error: %s",
-            index_name,
+            "Could not create database indexes: %s. Run scripts.migrate_vehicle_tenant --dry-run "
+            "and resolve duplicate registrationNumber values.",
             exc,
         )
+        raise RuntimeError("Database indexes could not be created; refusing to start.") from exc
+
+
+ensure_vehicle_indexes = ensure_indexes

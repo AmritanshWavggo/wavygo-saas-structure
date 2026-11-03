@@ -8,12 +8,12 @@ from bson import ObjectId
 from fastapi import HTTPException, UploadFile
 from starlette.datastructures import Headers
 
-from app.modules.auth.deps import get_current_tenant
 from app.modules.vehicles import router
 from app.modules.vehicles.schemas import ShowOnWavygoSchema
+from app.modules.vehicles.schemas import VehicleCreateSchema
 from app.modules.vehicles.upload_middleware import MAX_PHOTO_SIZE_BYTES
 
-TENANT = {"tenant_id": "dev_tenant", "role": "owner"}
+TENANT = {"_id": ObjectId(), "tenantId": ObjectId(), "role": "owner"}
 
 
 def upload_file(content: bytes = b"photo", content_type: str = "image/jpeg") -> UploadFile:
@@ -54,7 +54,7 @@ def create(**overrides):
         "document_types": [],
     }
     payload.update(overrides)
-    return router.create_vehicle(**payload)
+    return router.create_vehicle(**payload)["data"]
 
 
 def update(vehicle_id: str, **overrides):
@@ -70,7 +70,7 @@ def update(vehicle_id: str, **overrides):
         "new_document_types": [], "remove_photo_ids": [], "remove_document_ids": [],
     }
     payload.update(overrides)
-    return router.update_vehicle(**payload)
+    return router.update_vehicle(**payload)["data"]
 
 
 def stored_id(store) -> str:
@@ -121,7 +121,7 @@ def test_create_duplicate_invalid_file_and_cleanup_failures(vehicle_store, monke
 
 def test_get_found_not_found_and_invalid_id(vehicle_store):
     create()
-    assert router.get_vehicle(stored_id(vehicle_store), TENANT)["name"] == "Honda Activa"
+    assert router.get_vehicle(stored_id(vehicle_store), TENANT)["data"]["name"] == "Honda Activa"
     for vehicle_id in (str(ObjectId()), "not-an-object-id"):
         with pytest.raises(HTTPException) as error:
             router.get_vehicle(vehicle_id, TENANT)
@@ -159,12 +159,12 @@ def test_update_does_not_delete_removed_assets_when_db_write_fails(vehicle_store
 def test_delete_booking_protection_and_cloudinary_cleanup(vehicle_store):
     create(photos=[upload_file()])
     vehicle_id = stored_id(vehicle_store)
-    vehicle_store.bookings.documents.append({"_id": ObjectId(), "vehicleId": vehicle_id})
+    vehicle_store.bookings.documents.append({"_id": ObjectId(), "tenantId": TENANT["tenantId"], "vehicleId": vehicle_id})
     with pytest.raises(HTTPException) as blocked:
         router.delete_vehicle(vehicle_id, TENANT)
     assert blocked.value.status_code == 409
     vehicle_store.bookings.documents.clear()
-    assert router.delete_vehicle(vehicle_id, TENANT)["id"] == vehicle_id
+    assert router.delete_vehicle(vehicle_id, TENANT)["data"]["id"] == vehicle_id
     assert ("asset-1", "image") in vehicle_store.deletes
 
 
@@ -172,31 +172,26 @@ def test_list_filters_pagination_listing_and_safe_search(vehicle_store):
     create(show_on_wavygo=True, registration_number="GJ05AB1111", make_model="A+B Bike")
     create(show_on_wavygo=False, registration_number="GJ05AB2222", make_model="Second Bike")
     listed = router.list_vehicles(TENANT, search="A+B", type="Scooter", fuel="Petrol", fleet_availability="Available", listing="online", page=1, limit=1)
-    assert listed["total"] == 1 and listed["items"][0]["name"] == "A+B Bike"
+    assert listed["meta"]["total"] == 1 and listed["data"][0]["name"] == "A+B Bike"
     offline = router.list_vehicles(TENANT, search=None, type=None, fuel=None, fleet_availability=None, listing="offline", page=1, limit=20)
-    assert offline["total"] == 1
+    assert offline["meta"]["total"] == 1
     injection = router.list_vehicles(TENANT, search='{"$ne":""}', type=None, fuel=None, fleet_availability=None, listing="all", page=1, limit=20)
-    assert injection["total"] == 0
+    assert injection["meta"]["total"] == 0
 
 
-def test_toggle_keeps_availability_and_auth_stub_is_documented(vehicle_store):
+def test_toggle_keeps_availability(vehicle_store):
     create()
     vehicle_id = stored_id(vehicle_store)
     before = vehicle_store.vehicles.documents[0]["fleetAvailability"]
-    toggled = router.toggle_show_on_wavygo(vehicle_id, ShowOnWavygoSchema(showOnWavygo=True), TENANT)
+    toggled = router.toggle_show_on_wavygo(vehicle_id, ShowOnWavygoSchema(showOnWavygo=True), TENANT)["data"]
     assert toggled["showOnWavygo"] is True and toggled["status"] == "Online"
     assert toggled["fleetAvailability"] == before
-    assert get_current_tenant() == {"tenant_id": "dev_tenant", "role": "owner"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Vehicle records do not store tenant ownership and route queries do not scope by tenant.",
-)
 @pytest.mark.parametrize("operation", ["get", "list", "update", "toggle", "delete"])
 def test_tenant_b_cannot_access_tenant_a_vehicle(vehicle_store, operation):
-    tenant_a = {"tenant_id": "tenant-a", "role": "owner"}
-    tenant_b = {"tenant_id": "tenant-b", "role": "owner"}
+    tenant_a = {"_id": ObjectId(), "tenantId": ObjectId(), "role": "owner"}
+    tenant_b = {"_id": ObjectId(), "tenantId": ObjectId(), "role": "owner"}
 
     created = create(tenant=tenant_a)
     vehicle_id = created["id"]
@@ -216,7 +211,7 @@ def test_tenant_b_cannot_access_tenant_a_vehicle(vehicle_store, operation):
             page=1,
             limit=20,
         )
-        assert listing["items"] == []
+        assert listing["data"] == []
     elif operation == "update":
         with pytest.raises(HTTPException) as error:
             update(vehicle_id, tenant=tenant_b, color="Red")
@@ -272,10 +267,19 @@ def test_listing_all_returns_online_and_offline_vehicles(vehicle_store):
         limit=20,
     )
 
-    assert listed["total"] == 2
-    assert {item["showOnWavygo"] for item in listed["items"]} == {False, True}
+    assert listed["meta"]["total"] == 2
+    assert {item["showOnWavygo"] for item in listed["data"]} == {False, True}
 
 
 def test_list_limit_declares_a_maximum_page_size(vehicle_store):
     limit = inspect.signature(router.list_vehicles).parameters["limit"].default
     assert any(getattr(constraint, "le", None) == 100 for constraint in limit.metadata)
+
+
+def test_client_cannot_set_tenant_or_audit_fields_in_vehicle_schema():
+    with pytest.raises(Exception):
+        VehicleCreateSchema.model_validate({
+            "makeModel": "Honda Activa", "registration": "GJ 05 AB 4821", "year": 2024,
+            "type": "Scooter", "fuel": "Petrol", "transmission": "Automatic", "dailyRate": 500,
+            "pickupLocation": {"address": "Surat"}, "tenantId": str(ObjectId()),
+        })

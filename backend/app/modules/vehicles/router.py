@@ -37,7 +37,9 @@ from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
 from app.db.mongodb import get_database
-from app.modules.auth.deps import TenantContext, get_current_tenant
+from app.core.responses import success
+from app.modules.auth.deps import TenantContext, get_current_tenant, require_role
+from app.modules.auth.models import UserRole
 from app.modules.vehicles.models import (
     DocumentType,
     FleetAvailability,
@@ -127,6 +129,9 @@ def _doc_to_response(doc: dict) -> dict:
     """
     doc = dict(doc)
     raw_id = doc.pop("_id", None)
+    doc.pop("tenantId", None)
+    doc.pop("createdBy", None)
+    doc.pop("deletedAt", None)
     doc["id"] = str(raw_id) if raw_id is not None else None
     return doc
 
@@ -189,6 +194,14 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _tenant_id(context: TenantContext):
+    return context.get("tenantId") or context["tenant_id"]
+
+
+def _vehicle_filter(vehicle_id: ObjectId, context: TenantContext) -> dict:
+    return {"_id": vehicle_id, "tenantId": _tenant_id(context), "deletedAt": None}
+
+
 # ---------------------------------------------------------------------------
 # 6. List vehicles  (fixed path — declared before /{id})
 # ---------------------------------------------------------------------------
@@ -218,7 +231,7 @@ def list_vehicles(
     - ``offline`` — showOnWavygo is False or missing
     """
     col = _get_vehicles_col()
-    query: dict[str, Any] = {}
+    query: dict[str, Any] = {"tenantId": _tenant_id(tenant), "deletedAt": None}
 
     # Search — escape user input before building a regex (never pass raw input)
     if search:
@@ -273,12 +286,7 @@ def list_vehicles(
     cursor = col.find(query).skip(skip).limit(limit)
     items = [_doc_to_response(doc) for doc in cursor]
 
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "limit": limit,
-    }
+    return success(items, meta={"total": total, "page": page, "limit": limit})
 
 
 # ---------------------------------------------------------------------------
@@ -288,7 +296,7 @@ def list_vehicles(
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Create vehicle")
 def create_vehicle(
-    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    tenant: Annotated[TenantContext, Depends(require_role(UserRole.owner, UserRole.manager))],
     # ---- Step 0: Basic Details ----
     make_model: str = Form(..., alias="makeModel", max_length=120),
     registration: str = Form(..., max_length=20),
@@ -426,7 +434,7 @@ def create_vehicle(
             )
     if norm_rc:
         col = _get_vehicles_col()
-        if check_rc_duplicate(norm_rc, col):
+        if check_rc_duplicate(norm_rc, col, _tenant_id(tenant)):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -467,7 +475,7 @@ def create_vehicle(
             file_bytes = photo.file.read()
             result = cloudinary_service.upload_file(
                 file_bytes,
-                folder=_CLOUDINARY_PHOTO_FOLDER,
+                folder=f"{_CLOUDINARY_PHOTO_FOLDER}/{_tenant_id(tenant)}",
                 resource_type="image",
             )
             rollback_meta.append({"publicId": result["public_id"], "resourceType": "image"})
@@ -480,7 +488,7 @@ def create_vehicle(
             rtype = _cloudinary_resource_type(doc_file.content_type or "image/jpeg")
             result = cloudinary_service.upload_file(
                 file_bytes,
-                folder=_CLOUDINARY_DOCUMENT_FOLDER,
+                folder=f"{_CLOUDINARY_DOCUMENT_FOLDER}/{_tenant_id(tenant)}",
                 resource_type=rtype,
             )
             rollback_meta.append({"publicId": result["public_id"], "resourceType": rtype})
@@ -547,6 +555,9 @@ def create_vehicle(
     )
 
     doc = vehicle.model_dump(by_alias=True)
+    doc["tenantId"] = _tenant_id(tenant)
+    doc["createdBy"] = tenant["_id"]
+    doc["deletedAt"] = None
 
     # ------------------------------------------------------------------
     # 7. Insert into MongoDB; rollback Cloudinary on failure
@@ -570,7 +581,10 @@ def create_vehicle(
 
     doc["id"] = str(result_insert.inserted_id)
     doc.pop("_id", None)
-    return doc
+    doc.pop("tenantId", None)
+    doc.pop("createdBy", None)
+    doc.pop("deletedAt", None)
+    return success(doc, status_code=status.HTTP_201_CREATED)
 
 
 # ---------------------------------------------------------------------------
@@ -589,13 +603,13 @@ def get_vehicle(
     """
     oid = _parse_object_id(vehicle_id)
     col = _get_vehicles_col()
-    doc = col.find_one({"_id": oid})
+    doc = col.find_one(_vehicle_filter(oid, tenant))
     if doc is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vehicle '{vehicle_id}' not found.",
         )
-    return _doc_to_response(doc)
+    return success(_doc_to_response(doc))
 
 
 # ---------------------------------------------------------------------------
@@ -606,7 +620,7 @@ def get_vehicle(
 @router.patch("/{vehicle_id}", summary="Update vehicle")
 def update_vehicle(
     vehicle_id: str,
-    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    tenant: Annotated[TenantContext, Depends(require_role(UserRole.owner, UserRole.manager))],
     # Basic Details (all optional for PATCH)
     make_model: Optional[str] = Form(default=None, alias="makeModel", max_length=120),
     registration: Optional[str] = Form(default=None, max_length=20),
@@ -657,7 +671,7 @@ def update_vehicle(
 
     oid = _parse_object_id(vehicle_id)
     col = _get_vehicles_col()
-    existing = col.find_one({"_id": oid})
+    existing = col.find_one(_vehicle_filter(oid, tenant))
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -800,7 +814,7 @@ def update_vehicle(
             )
         if norm_rc:
             existing_rc = existing.get("registrationNumber")
-            if norm_rc != existing_rc and check_rc_duplicate(norm_rc, col):
+            if norm_rc != existing_rc and check_rc_duplicate(norm_rc, col, _tenant_id(tenant)):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(
@@ -843,7 +857,7 @@ def update_vehicle(
         for photo in new_photos:
             file_bytes = photo.file.read()
             result = cloudinary_service.upload_file(
-                file_bytes, folder=_CLOUDINARY_PHOTO_FOLDER, resource_type="image"
+                file_bytes, folder=f"{_CLOUDINARY_PHOTO_FOLDER}/{_tenant_id(tenant)}", resource_type="image"
             )
             newly_uploaded.append({"publicId": result["public_id"], "resourceType": "image"})
             new_photo_models.append({
@@ -855,7 +869,7 @@ def update_vehicle(
             file_bytes = doc_file.file.read()
             rtype = _cloudinary_resource_type(doc_file.content_type or "image/jpeg")
             result = cloudinary_service.upload_file(
-                file_bytes, folder=_CLOUDINARY_DOCUMENT_FOLDER, resource_type=rtype
+                file_bytes, folder=f"{_CLOUDINARY_DOCUMENT_FOLDER}/{_tenant_id(tenant)}", resource_type=rtype
             )
             newly_uploaded.append({"publicId": result["public_id"], "resourceType": rtype})
             new_doc_models.append({
@@ -910,7 +924,7 @@ def update_vehicle(
         set_doc["documents"] = final_docs
 
     try:
-        col.update_one({"_id": oid}, {"$set": set_doc})
+        col.update_one(_vehicle_filter(oid, tenant), {"$set": set_doc})
 
     except DuplicateKeyError:
         _delete_cloudinary_files(newly_uploaded)
@@ -938,8 +952,8 @@ def update_vehicle(
         ]
     )
 
-    updated_doc = col.find_one({"_id": oid})
-    return _doc_to_response(updated_doc)
+    updated_doc = col.find_one(_vehicle_filter(oid, tenant))
+    return success(_doc_to_response(updated_doc))
 
 
 # ---------------------------------------------------------------------------
@@ -953,7 +967,7 @@ def update_vehicle(
 def toggle_show_on_wavygo(
     vehicle_id: str,
     payload: ShowOnWavygoSchema,
-    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    tenant: Annotated[TenantContext, Depends(require_role(UserRole.owner, UserRole.manager))],
 ) -> dict:
     """
     Set ``showOnWavygo`` and mirror the change to ``status``.
@@ -966,7 +980,7 @@ def toggle_show_on_wavygo(
     """
     oid = _parse_object_id(vehicle_id)
     col = _get_vehicles_col()
-    existing = col.find_one({"_id": oid})
+    existing = col.find_one(_vehicle_filter(oid, tenant))
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -976,7 +990,7 @@ def toggle_show_on_wavygo(
     show_on_wavygo = payload.show_on_wavygo
     listing_status = ListingStatus.online.value if show_on_wavygo else ListingStatus.offline.value
     col.update_one(
-        {"_id": oid},
+        _vehicle_filter(oid, tenant),
         {
             "$set": {
                 "showOnWavygo": show_on_wavygo,
@@ -985,8 +999,8 @@ def toggle_show_on_wavygo(
             }
         },
     )
-    updated = col.find_one({"_id": oid})
-    return _doc_to_response(updated)
+    updated = col.find_one(_vehicle_filter(oid, tenant))
+    return success(_doc_to_response(updated))
 
 
 # ---------------------------------------------------------------------------
@@ -997,7 +1011,7 @@ def toggle_show_on_wavygo(
 @router.delete("/{vehicle_id}", status_code=status.HTTP_200_OK, summary="Delete vehicle")
 def delete_vehicle(
     vehicle_id: str,
-    tenant: Annotated[TenantContext, Depends(get_current_tenant)],
+    tenant: Annotated[TenantContext, Depends(require_role(UserRole.owner))],
 ) -> dict:
     """
     Delete a vehicle.
@@ -1007,7 +1021,7 @@ def delete_vehicle(
     """
     oid = _parse_object_id(vehicle_id)
     col = _get_vehicles_col()
-    existing = col.find_one({"_id": oid})
+    existing = col.find_one(_vehicle_filter(oid, tenant))
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -1022,7 +1036,7 @@ def delete_vehicle(
     try:
         bookings_col = _get_bookings_col()
         booking_exists = bookings_col.find_one(
-            {"$or": [{"vehicleId": oid}, {"vehicleId": vehicle_id}]}
+            {"tenantId": _tenant_id(tenant), "$or": [{"vehicleId": oid}, {"vehicleId": vehicle_id}]}
         )
         if booking_exists:
             raise HTTPException(
@@ -1041,7 +1055,7 @@ def delete_vehicle(
     # ------------------------------------------------------------------
     # Delete the DB record first
     # ------------------------------------------------------------------
-    col.delete_one({"_id": oid})
+    col.update_one(_vehicle_filter(oid, tenant), {"$set": {"deletedAt": _now_utc(), "updatedAt": _now_utc()}})
 
     # ------------------------------------------------------------------
     # Delete Cloudinary files after successful DB removal
@@ -1065,4 +1079,4 @@ def delete_vehicle(
 
     _delete_cloudinary_files(photo_meta + doc_meta)
 
-    return {"message": f"Vehicle '{vehicle_id}' deleted successfully.", "id": vehicle_id}
+    return success({"message": f"Vehicle '{vehicle_id}' deleted successfully.", "id": vehicle_id})

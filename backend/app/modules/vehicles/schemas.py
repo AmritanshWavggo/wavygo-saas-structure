@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.modules.vehicles.models import (
     DocumentType,
@@ -107,7 +107,7 @@ class BasicDetailsSchema(BaseModel):
             )
         return normalised
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +132,8 @@ class PickupLocationSchema(BaseModel):
                 "Provide both 'lat' and 'lng' together, or omit both."
             )
         return self
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class PricingAvailabilitySchema(BaseModel):
@@ -164,7 +166,7 @@ class PricingAvailabilitySchema(BaseModel):
         alias="fleetAvailability",
     )
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +188,7 @@ class DocumentMetaSchema(BaseModel):
     public_id: str = Field(..., alias="publicId", min_length=1)
     uploaded_at: Optional[datetime] = Field(default=None, alias="uploadedAt")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class DocumentsSchema(BaseModel):
@@ -201,6 +203,8 @@ class DocumentsSchema(BaseModel):
             raise ValueError("A vehicle may have at most 10 documents.")
         return value
 
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
 
 class PhotoMetaSchema(BaseModel):
     """Metadata for a single photo (post-Cloudinary-upload)."""
@@ -208,7 +212,7 @@ class PhotoMetaSchema(BaseModel):
     url: str = Field(..., min_length=1)
     public_id: str = Field(..., alias="publicId", min_length=1)
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 # ---------------------------------------------------------------------------
@@ -238,7 +242,7 @@ class VehicleCreateSchema(BasicDetailsSchema, PricingAvailabilitySchema):
             raise ValueError("A vehicle may have at most 20 photos.")
         return value
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class VehicleUpdateSchema(BaseModel):
@@ -283,7 +287,7 @@ class VehicleUpdateSchema(BaseModel):
             )
         return normalised
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
 
 class ShowOnWavygoSchema(BaseModel):
@@ -291,4 +295,4 @@ class ShowOnWavygoSchema(BaseModel):
 
     show_on_wavygo: bool = Field(alias="showOnWavygo")
 
-    model_config = {"populate_by_name": True}
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")

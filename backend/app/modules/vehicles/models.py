@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+from bson import ObjectId
+
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -91,7 +93,7 @@ class VehiclePhoto(BaseModel):
     url: str
     public_id: str = Field(alias="publicId")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "arbitrary_types_allowed": True}
 
 
 class VehicleFile(BaseModel):
@@ -109,7 +111,7 @@ class VehicleFile(BaseModel):
     # Defaults to "image" so legacy records without this field remain valid.
     resource_type: str = Field(default="image", alias="resourceType")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "arbitrary_types_allowed": True}
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,9 @@ class VehicleModel(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         alias="updatedAt",
     )
+    tenant_id: Optional[ObjectId] = Field(default=None, alias="tenantId", exclude=True)
+    created_by: Optional[ObjectId] = Field(default=None, alias="createdBy", exclude=True)
+    deleted_at: Optional[datetime] = Field(default=None, alias="deletedAt", exclude=True)
 
     # ------------------------------------------------------------------
     # Validators
@@ -215,7 +220,7 @@ class VehicleModel(BaseModel):
         normalised = value.strip().upper()
         return normalised if normalised else None
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "arbitrary_types_allowed": True}
 
 
 # ---------------------------------------------------------------------------

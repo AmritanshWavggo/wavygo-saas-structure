@@ -3,9 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.db.mongodb import ensure_vehicle_indexes
+from app.core.exceptions import install_exception_handlers
+from app.core.responses import success
+from app.db.mongodb import ensure_indexes
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
+install_exception_handlers(app)
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,12 +22,13 @@ app.add_middleware(
 @app.on_event("startup")
 def on_startup() -> None:
     """Run one-time startup tasks (indexes, etc.)."""
-    ensure_vehicle_indexes()
+    settings.validate_security_settings()
+    ensure_indexes()
 
 
 @app.get("/health")
-def health_check() -> dict[str, str]:
-    return {"status": "ok"}
+def health_check() -> dict:
+    return success({"status": "ok"})
 
 
 app.include_router(api_router, prefix="/api/v1")
