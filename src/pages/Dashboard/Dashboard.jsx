@@ -33,6 +33,7 @@ const revenueTrend = [
 ]
 
 function Dashboard() {
+  // TODO: Phase 5 - Replace demo vehicles with real API data once Dashboard/Reports are wired to backend
   const { bookings, vehicles } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
   const rentedVehicles = vehicles.filter((vehicle) => vehicle.availability === 'Rented')
@@ -194,3 +195,4 @@ function Dashboard() {
 }
 
 export default Dashboard
+

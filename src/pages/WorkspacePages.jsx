@@ -487,6 +487,7 @@ const reportSeries = {
 }
 
 function Reports() {
+  // TODO: Phase 5 - Replace demo vehicles with real API data once Dashboard/Reports are wired to backend
   const { vehicles, bookings, customers, payments } = useDemoData()
   const [tab, setTab] = useState('Overview')
   const sections = Object.keys(reportSeries)

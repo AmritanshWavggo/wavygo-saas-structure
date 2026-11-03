@@ -9,7 +9,9 @@ import {
   ShieldCheck,
   Sparkles,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
+import { ApiError } from '../services/apiClient.js'
+import { useAuth } from '../providers/AuthProvider.jsx'
 
 const demoStatistics = [
   { label: 'Total vehicles', value: '248', detail: 'in your fleet' },
@@ -49,6 +51,8 @@ function StatisticCard({ label, value, detail }) {
 }
 
 function LoginPage() {
+  const navigate = useNavigate()
+  const { login } = useAuth()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [keepSignedIn, setKeepSignedIn] = useState(false)
@@ -82,14 +86,14 @@ function LoginPage() {
 
     if (!validateForm()) return
 
-    // Simulate the pending state for feedback without transmitting or retaining credentials.
     setIsSubmitting(true)
-    window.setTimeout(() => {
+    login(email, password).then(() => {
+      navigate('/app/dashboard', { replace: true })
+    }).catch((error) => {
+      setNotice(error instanceof ApiError ? error.message : 'Unable to sign in. Please try again.')
+    }).finally(() => {
       setIsSubmitting(false)
-      setNotice(
-        'Sign-in is not connected yet. Your credentials were not sent.',
-      )
-    }, 650)
+    })
   }
 
   function updateEmail(value) {
@@ -342,19 +346,6 @@ function LoginPage() {
               )}
             </button>
           </form>
-
-          <div className="mt-5 text-center">
-            <Link
-              to="/app/dashboard"
-              onClick={() => sessionStorage.setItem('wavygo-demo-access', 'enabled')}
-              className="text-xs font-medium text-[#A2E8CA] underline-offset-4 transition-colors hover:text-white hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#A2E8CA]"
-            >
-              Explore the interactive demo workspace
-            </Link>
-            <p className="mt-1.5 text-[10px] text-slate-500">
-              Sample data only · No authentication service is connected
-            </p>
-          </div>
 
           <div aria-live="polite" className="min-h-12 pt-3">
             {notice && (

@@ -14,6 +14,7 @@ import Maintenance from './pages/Maintenance/Maintenance.jsx'
 import Staff from './pages/Staff/Staff.jsx'
 import Reports from './pages/Reports/Reports.jsx'
 import Settings from './pages/Settings/Settings.jsx'
+import ProtectedRoute from './components/auth/ProtectedRoute.jsx'
 
 function App() {
   return (
@@ -21,7 +22,7 @@ function App() {
       <Routes>
         <Route path="/" element={<LoginPage />} />
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/app" element={<VendorLayout />}>
+        <Route path="/app" element={<ProtectedRoute><VendorLayout /></ProtectedRoute>}>
           <Route index element={<Navigate to="dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="vehicles" element={<Vehicles />} />
