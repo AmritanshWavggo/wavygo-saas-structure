@@ -132,6 +132,7 @@ def _doc_to_response(doc: dict) -> dict:
     doc.pop("tenantId", None)
     doc.pop("createdBy", None)
     doc.pop("deletedAt", None)
+    doc.pop("bookingGuard", None)
     doc["id"] = str(raw_id) if raw_id is not None else None
     return doc
 
@@ -584,6 +585,7 @@ def create_vehicle(
     doc.pop("tenantId", None)
     doc.pop("createdBy", None)
     doc.pop("deletedAt", None)
+    doc.pop("bookingGuard", None)
     return success(doc, status_code=status.HTTP_201_CREATED)
 
 
@@ -995,7 +997,7 @@ def toggle_show_on_wavygo(
             "$set": {
                 "showOnWavygo": show_on_wavygo,
                 "status": listing_status,
-                "updatedAt": _now_utc().isoformat(),
+                "updatedAt": _now_utc(),
             }
         },
     )

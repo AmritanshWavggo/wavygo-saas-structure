@@ -33,6 +33,7 @@ function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
   const offlineMode = Boolean(location.state?.offline)
+  // TODO: Phase 3 - Replace demo customers and vehicles with real API hooks in AddBooking
   const { vehicles: allVehicles, customers } = useDemoData()
   // Rented and maintenance vehicles are excluded from booking choices in the demo workspace.
   const vehicles = allVehicles.filter((vehicle) => vehicle.availability === 'Available')

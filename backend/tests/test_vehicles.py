@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from io import BytesIO
 import inspect
 
@@ -186,6 +187,15 @@ def test_toggle_keeps_availability(vehicle_store):
     toggled = router.toggle_show_on_wavygo(vehicle_id, ShowOnWavygoSchema(showOnWavygo=True), TENANT)["data"]
     assert toggled["showOnWavygo"] is True and toggled["status"] == "Online"
     assert toggled["fleetAvailability"] == before
+
+
+def test_toggle_show_on_wavygo_updated_at_is_datetime(vehicle_store):
+    create()
+    vehicle_id = stored_id(vehicle_store)
+    router.toggle_show_on_wavygo(vehicle_id, ShowOnWavygoSchema(showOnWavygo=True), TENANT)
+    doc_in_store = vehicle_store.vehicles.documents[0]
+    assert isinstance(doc_in_store["updatedAt"], datetime)
+    assert not isinstance(doc_in_store["updatedAt"], str)
 
 
 @pytest.mark.parametrize("operation", ["get", "list", "update", "toggle", "delete"])

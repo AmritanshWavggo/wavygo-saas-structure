@@ -1,6 +1,6 @@
 import logging
 
-from pymongo import ASCENDING, MongoClient
+from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.database import Database
 from pymongo.errors import DuplicateKeyError, OperationFailure, PyMongoError
 
@@ -13,7 +13,39 @@ def create_mongo_client() -> MongoClient | None:
     """Create a client only when explicitly requested and configured."""
     if not settings.mongodb_uri:
         return None
-    return MongoClient(settings.mongodb_uri, serverSelectionTimeoutMS=5000)
+    return MongoClient(
+        settings.mongodb_uri,
+        serverSelectionTimeoutMS=5000,
+        tz_aware=True,
+    )
+
+
+def check_replica_set(client: MongoClient | None = None) -> None:
+    """
+    Ensure production MongoDB is running as a replica set so multi-document transactions work.
+    Skipped strictly when APP_ENV == 'testing'.
+    Uses admin command 'hello' and requires 'setName'.
+    """
+    if settings.app_env == "testing":
+        return
+
+    if client is None:
+        client = create_mongo_client()
+
+    if client is None:
+        return
+
+    try:
+        hello_doc = client.admin.command("hello")
+        if "setName" not in hello_doc:
+            raise RuntimeError(
+                "MongoDB is not running as a replica set (missing 'setName' in hello response). "
+                "Transactions require a replica set."
+            )
+    except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"Failed to verify MongoDB replica set status: {exc}") from exc
 
 
 def get_database(client: MongoClient | None = None) -> Database | None:
@@ -27,7 +59,7 @@ def get_database(client: MongoClient | None = None) -> Database | None:
 
 def ensure_indexes() -> None:
     """
-    Create required indexes on all collections (tenants, users, refresh_tokens, vehicles, customers).
+    Create required indexes on all collections (tenants, users, refresh_tokens, vehicles, customers, bookings, counters).
 
     Called once at application startup. Idempotent — if the index already
     exists with the same name and options, PyMongo is a no-op.
@@ -47,6 +79,7 @@ def ensure_indexes() -> None:
         db["refresh_tokens"].create_index([("tokenHash", ASCENDING)], unique=True, name="uq_refresh_token_hash")
         db["refresh_tokens"].create_index([("userId", ASCENDING), ("expiresAt", ASCENDING)], name="ix_refresh_user_expiry")
         db["refresh_tokens"].create_index([("expiresAt", ASCENDING)], expireAfterSeconds=0, name="ttl_refresh_expiry")
+
         vehicles = db["vehicles"]
         existing_indexes = {index["name"] for index in vehicles.list_indexes()}
         if "uq_registration_number" in existing_indexes:
@@ -59,6 +92,7 @@ def ensure_indexes() -> None:
             partialFilterExpression={"deletedAt": {"$type": "null"}, "registrationNumber": {"$type": "string"}},
             name="uq_vehicle_tenant_registration_active",
         )
+
         customers = db["customers"]
         customers.create_index(
             [("tenantId", ASCENDING), ("deletedAt", ASCENDING), ("createdAt", ASCENDING)],
@@ -70,10 +104,35 @@ def ensure_indexes() -> None:
             partialFilterExpression={"deletedAt": {"$type": "null"}, "phone": {"$type": "string"}},
             name="uq_customer_tenant_phone_active",
         )
-        logger.info("Database security indexes are ready.")
+
+        counters = db["counters"]
+        counters.create_index(
+            [("tenantId", ASCENDING), ("sequence", ASCENDING)],
+            unique=True,
+            name="uq_counters_tenant_sequence",
+        )
+
+        bookings = db["bookings"]
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("bookingNumber", ASCENDING)],
+            unique=True,
+            name="uq_bookings_tenant_number",
+        )
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("deletedAt", ASCENDING), ("startDate", DESCENDING)],
+            name="ix_bookings_tenant_deleted_start",
+        )
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("vehicleId", ASCENDING), ("status", ASCENDING), ("startDate", ASCENDING), ("endDate", ASCENDING)],
+            name="ix_bookings_overlap_scan",
+        )
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("customerId", ASCENDING), ("deletedAt", ASCENDING)],
+            name="ix_bookings_customer_history",
+        )
+
+        logger.info("Database security and domain indexes are ready.")
     except (DuplicateKeyError, OperationFailure, PyMongoError) as exc:
-        # OperationFailure code 85 = index already exists with different options.
-        # DuplicateKeyError = existing data already has duplicate registrationNumber / phone values.
         logger.error(
             "Could not create database indexes: %s. Run scripts.migrate_vehicle_tenant --dry-run "
             "and resolve duplicate values.",

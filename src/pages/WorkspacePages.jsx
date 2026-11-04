@@ -146,6 +146,7 @@ function DetailDialog({ title, rows, onClose }) {
   )
 }
 
+// NOTE: Phase 2 replaced this with src/pages/Customers/Customers.jsx (connected to real backend API).
 function Customers() {
   const { customers, addRecord } = useDemoData()
   const [query, setQuery] = useState('')

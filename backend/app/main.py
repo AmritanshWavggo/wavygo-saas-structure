@@ -5,7 +5,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.exceptions import install_exception_handlers
 from app.core.responses import success
-from app.db.mongodb import ensure_indexes
+from app.db.mongodb import check_replica_set, ensure_indexes
 
 app = FastAPI(title=settings.app_name, version="0.1.0")
 install_exception_handlers(app)
@@ -21,8 +21,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """Run one-time startup tasks (indexes, etc.)."""
+    """Run one-time startup tasks (indexes, replica-set checks, etc.)."""
     settings.validate_security_settings()
+    check_replica_set()
     ensure_indexes()
 
 

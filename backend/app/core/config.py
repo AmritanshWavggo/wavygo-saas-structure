@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     access_token_ttl_minutes: int = 15
     refresh_token_ttl_days: int = 30
     cookie_secure: bool = False
+    booking_grace_period_days: int = 1
 
     model_config = SettingsConfigDict(
         env_file=".env",

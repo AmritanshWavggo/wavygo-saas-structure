@@ -206,6 +206,7 @@ class VehicleModel(BaseModel):
     tenant_id: Optional[ObjectId] = Field(default=None, alias="tenantId", exclude=True)
     created_by: Optional[ObjectId] = Field(default=None, alias="createdBy", exclude=True)
     deleted_at: Optional[datetime] = Field(default=None, alias="deletedAt", exclude=True)
+    booking_guard: int = Field(default=0, alias="bookingGuard", exclude=True)
 
     # ------------------------------------------------------------------
     # Validators

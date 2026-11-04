@@ -11,6 +11,12 @@ from bson import ObjectId
 # Ensure mongomock supports MongoDB $type: "null"
 mongomock.filtering.TYPE_MAP["null"] = lambda v: v is None
 
+import os
+os.environ["APP_ENV"] = "testing"
+
+from app.core.config import settings
+settings.app_env = "testing"
+
 from app.modules.vehicles import router as vehicles_router
 
 
