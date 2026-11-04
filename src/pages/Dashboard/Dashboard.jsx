@@ -10,6 +10,8 @@ import {
   MapPin,
   MoreHorizontal,
   Plus,
+  RotateCcw,
+  Users,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useDemoData } from '../../data/DemoDataContext.jsx'
@@ -22,6 +24,8 @@ import {
   PageHeader,
   StatusBadge,
 } from '../../components/ui/Workspace.jsx'
+import { useVehicles } from '../../hooks/useVehicles.js'
+import { useCustomerMetrics } from '../../hooks/useCustomers.js'
 
 const revenueTrend = [
   { label: 'May', value: 18600 },
@@ -32,8 +36,98 @@ const revenueTrend = [
   { label: 'Oct', value: 35400 },
 ]
 
+function RealMetricCard({
+  label,
+  query,
+  getStat,
+  zeroCaption,
+  successCaption,
+  icon: Icon,
+  tone = 'navy',
+}) {
+  const { data, isLoading, isError, refetch } = query
+
+  let content = null
+  let caption = null
+
+  if (isLoading) {
+    content = (
+      <span
+        data-testid={`${label.toLowerCase().replace(/\s+/g, '-')}-loading`}
+        className="inline-block h-8 w-16 animate-pulse rounded bg-slate-200"
+        role="status"
+        aria-label={`Loading ${label}`}
+      />
+    )
+    caption = <span className="text-slate-400">Updating live count...</span>
+  } else if (isError) {
+    content = (
+      <span
+        data-testid={`${label.toLowerCase().replace(/\s+/g, '-')}-error`}
+        className="text-sm font-semibold text-rose-600"
+      >
+        Failed to load
+      </span>
+    )
+    caption = (
+      <button
+        type="button"
+        onClick={() => refetch()}
+        className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-emerald-700 hover:text-emerald-900 underline"
+        aria-label={`Retry loading ${label}`}
+      >
+        <RotateCcw size={12} aria-hidden="true" />
+        Retry
+      </button>
+    )
+  } else {
+    const count = getStat(data) ?? 0
+    content = (
+      <span data-testid={`${label.toLowerCase().replace(/\s+/g, '-')}-value`}>
+        {count.toLocaleString('en-IN')}
+      </span>
+    )
+    caption = (
+      <span className="text-slate-400">
+        {count === 0 ? zeroCaption : successCaption}
+      </span>
+    )
+  }
+
+  return (
+    <Card className="p-4 sm:p-5" aria-busy={isLoading}>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-slate-500">{label}</p>
+          <div className="mt-2 text-[24px] font-semibold tracking-tight text-slate-900">
+            {content}
+          </div>
+          <div className="mt-1 text-[11px]">{caption}</div>
+        </div>
+        {Icon && (
+          <span
+            className={`grid size-10 shrink-0 place-items-center rounded-xl ${
+              tone === 'navy'
+                ? 'bg-slate-100 text-slate-700'
+                : tone === 'blue'
+                ? 'bg-blue-50 text-blue-700'
+                : 'bg-emerald-50 text-emerald-700'
+            }`}
+          >
+            <Icon size={18} aria-hidden="true" />
+          </span>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 function Dashboard() {
-  // TODO: Phase 5 - Replace demo vehicles with real API data once Dashboard/Reports are wired to backend
+  const vehiclesQuery = useVehicles({ limit: 1 })
+  const customerMetricsQuery = useCustomerMetrics()
+
+  // Demo data retained for bookings, utilization and revenue charts
+  // TODO: Phase 5 - Replace remaining demo items once Dashboard/Reports are fully wired
   const { bookings, vehicles } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
   const rentedVehicles = vehicles.filter((vehicle) => vehicle.availability === 'Rented')
@@ -67,11 +161,67 @@ function Dashboard() {
         Illustrative figures and sample records only — no live business data or API is connected.
       </div>
 
-      <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 sm:gap-4">
-        <MetricCard label="Total vehicles" value={vehicles.length} caption="Demo fleet" icon={Bike} tone="navy" />
-        <MetricCard label="Available vehicles" value={availableVehicles.length} caption="Ready for a booking" icon={Check} tone="green" />
-        <MetricCard label="Active bookings" value={activeBookings.length} caption="Sample active rentals" icon={CalendarDays} tone="blue" />
-        <MetricCard label="Revenue" value={`₹${monthlyRevenue.toLocaleString('en-IN')}`} caption="Illustrative October revenue" icon={CircleDollarSign} tone="violet" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4">
+        <RealMetricCard
+          label="Total vehicles"
+          query={vehiclesQuery}
+          getStat={(data) => data?.meta?.total ?? 0}
+          zeroCaption="0 vehicles in fleet"
+          successCaption="Live fleet count"
+          icon={Bike}
+          tone="navy"
+        />
+        <RealMetricCard
+          label="Total customers"
+          query={customerMetricsQuery}
+          getStat={(data) => data?.totalCustomers ?? 0}
+          zeroCaption="0 registered customers"
+          successCaption="Live customer base"
+          icon={Users}
+          tone="blue"
+        />
+        <MetricCard
+          label="Available vehicles"
+          value={availableVehicles.length}
+          caption={
+            <span className="flex flex-col gap-1">
+              <span>Ready for a booking</span>
+              <span className="inline-block w-fit rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                Demo data until Phase 5
+              </span>
+            </span>
+          }
+          icon={Check}
+          tone="green"
+        />
+        <MetricCard
+          label="Active bookings"
+          value={activeBookings.length}
+          caption={
+            <span className="flex flex-col gap-1">
+              <span>Sample active rentals</span>
+              <span className="inline-block w-fit rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                Demo data until Phase 5
+              </span>
+            </span>
+          }
+          icon={CalendarDays}
+          tone="blue"
+        />
+        <MetricCard
+          label="Revenue"
+          value={`₹${monthlyRevenue.toLocaleString('en-IN')}`}
+          caption={
+            <span className="flex flex-col gap-1">
+              <span>Illustrative October revenue</span>
+              <span className="inline-block w-fit rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                Demo data until Phase 5
+              </span>
+            </span>
+          }
+          icon={CircleDollarSign}
+          tone="violet"
+        />
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.9fr)]">
@@ -195,4 +345,3 @@ function Dashboard() {
 }
 
 export default Dashboard
-
