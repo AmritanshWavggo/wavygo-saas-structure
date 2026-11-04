@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 from bson import ObjectId
 from pymongo.client_session import ClientSession
-from pymongo.errors import PyMongoError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from pymongo.read_concern import ReadConcern
 from pymongo.read_preferences import ReadPreference
 from pymongo.write_concern import WriteConcern
@@ -476,15 +476,19 @@ def transition_booking_status(
         update_fields["cancelReason"] = cancel_reason
 
     # Compare-and-Set atomic update
-    res = db["bookings"].update_one(
-        {
-            "_id": booking_id,
-            "tenantId": tenant_id,
-            "status": curr,
-            "deletedAt": None,
-        },
-        {"$set": update_fields},
-    )
+    try:
+        res = db["bookings"].update_one(
+            {
+                "_id": booking_id,
+                "tenantId": tenant_id,
+                "status": curr,
+                "deletedAt": None,
+            },
+            {"$set": update_fields},
+        )
+    except DuplicateKeyError:
+        # Lost the race: another booking on this vehicle became Active first.
+        raise OverlapConflictError("Vehicle already has an active booking in progress.")
     if res.matched_count == 0:
         latest = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None})
         if not latest:
