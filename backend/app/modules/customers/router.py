@@ -322,6 +322,19 @@ def delete_customer(
     if not existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
 
+    db = col.database
+    blocking_booking = db["bookings"].find_one({
+        "tenantId": t_id,
+        "customerId": customer_id,
+        "deletedAt": None,
+        "status": {"$in": ["Pending", "Confirmed", "Active"]},
+    })
+    if blocking_booking:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot delete customer with active or upcoming bookings. Cancel or complete all bookings first.",
+        )
+
     now = datetime.now(timezone.utc)
     col.update_one({"_id": customer_id, "tenantId": t_id}, {"$set": {"deletedAt": now, "updatedAt": now}})
 

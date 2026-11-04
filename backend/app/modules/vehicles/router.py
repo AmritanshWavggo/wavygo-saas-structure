@@ -40,6 +40,11 @@ from app.db.mongodb import get_database
 from app.core.responses import success
 from app.modules.auth.deps import TenantContext, get_current_tenant, require_role
 from app.modules.auth.models import UserRole
+from app.modules.bookings.service import (
+    apply_booking_guard,
+    derive_vehicle_availability,
+    execute_in_transaction,
+)
 from app.modules.vehicles.models import (
     DocumentType,
     FleetAvailability,
@@ -119,13 +124,14 @@ def _parse_object_id(vehicle_id: str) -> ObjectId:
         )
 
 
-def _doc_to_response(doc: dict) -> dict:
+def _doc_to_response(doc: dict, db: Any = None, tenant_id: Any = None) -> dict:
     """
     Convert a raw MongoDB document to a JSON-safe response dict.
 
     - Converts _id (ObjectId) to a string field ``id``.
     - Does NOT re-validate via Pydantic so legacy records with unexpected
       enum values or missing fields are returned as-is (rule 5).
+    - Derives vehicle availability dynamically on read if db and tenant_id are provided.
     """
     doc = dict(doc)
     raw_id = doc.pop("_id", None)
@@ -134,6 +140,11 @@ def _doc_to_response(doc: dict) -> dict:
     doc.pop("deletedAt", None)
     doc.pop("bookingGuard", None)
     doc["id"] = str(raw_id) if raw_id is not None else None
+
+    if db is not None and tenant_id is not None and raw_id is not None:
+        doc["availability"] = derive_vehicle_availability(doc, db, tenant_id)
+        doc["fleetAvailability"] = doc["availability"]
+
     return doc
 
 
@@ -285,7 +296,8 @@ def list_vehicles(
     skip = (page - 1) * limit
     total = col.count_documents(query)
     cursor = col.find(query).skip(skip).limit(limit)
-    items = [_doc_to_response(doc) for doc in cursor]
+    db = getattr(col, "database", None)
+    items = [_doc_to_response(doc, db=db, tenant_id=query["tenantId"]) for doc in cursor]
 
     return success(items, meta={"total": total, "page": page, "limit": limit})
 
@@ -611,7 +623,8 @@ def get_vehicle(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Vehicle '{vehicle_id}' not found.",
         )
-    return success(_doc_to_response(doc))
+    db = getattr(col, "database", None)
+    return success(_doc_to_response(doc, db=db, tenant_id=_tenant_id(tenant)))
 
 
 # ---------------------------------------------------------------------------
@@ -1030,34 +1043,61 @@ def delete_vehicle(
             detail=f"Vehicle '{vehicle_id}' not found.",
         )
 
-    # ------------------------------------------------------------------
-    # Check for booking references before deleting
-    # Bookings may reference vehicles by ObjectId or string id.
-    # We check both to be safe.
-    # ------------------------------------------------------------------
-    try:
-        bookings_col = _get_bookings_col()
-        booking_exists = bookings_col.find_one(
-            {"tenantId": _tenant_id(tenant), "$or": [{"vehicleId": oid}, {"vehicleId": vehicle_id}]}
-        )
-        if booking_exists:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=(
-                    "Cannot delete this vehicle because it has active booking records. "
-                    "Cancel or reassign all bookings before deleting the vehicle."
-                ),
-            )
-    except HTTPException:
-        raise
-    except Exception:
-        # bookings collection might not exist yet — treat as no bookings
-        pass
+    t_id = _tenant_id(tenant)
+    db = getattr(col, "database", None)
+    client = getattr(db, "client", None) if db is not None else None
 
-    # ------------------------------------------------------------------
-    # Delete the DB record first
-    # ------------------------------------------------------------------
-    col.update_one(_vehicle_filter(oid, tenant), {"$set": {"deletedAt": _now_utc(), "updatedAt": _now_utc()}})
+    def delete_callback(session):
+        if db is not None:
+            # 1. Serialization guard on the vehicle document
+            apply_booking_guard(db, oid, t_id, session=session)
+
+            # 2. Check for active or future blocking bookings
+            now = _now_utc()
+            blocking_booking = db["bookings"].find_one(
+                {
+                    "tenantId": t_id,
+                    "$or": [{"vehicleId": oid}, {"vehicleId": vehicle_id}],
+                    "deletedAt": None,
+                    "$or": [
+                        {"status": {"$in": ["Pending", "Confirmed", "Active"]}},
+                        {"status": {"$exists": False}},
+                    ],
+                },
+                session=session,
+            )
+            if blocking_booking:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Cannot delete vehicle with active or upcoming bookings. Cancel or complete all bookings first.",
+                )
+        else:
+            try:
+                bookings_col = _get_bookings_col()
+                booking_exists = bookings_col.find_one(
+                    {"tenantId": t_id, "$or": [{"vehicleId": oid}, {"vehicleId": vehicle_id}]}
+                )
+                if booking_exists:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Cannot delete this vehicle because it has active booking records. "
+                            "Cancel or reassign all bookings before deleting the vehicle."
+                        ),
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+        update_kwargs = {"session": session} if session is not None else {}
+        col.update_one(
+            _vehicle_filter(oid, tenant),
+            {"$set": {"deletedAt": _now_utc(), "updatedAt": _now_utc()}},
+            **update_kwargs,
+        )
+
+    execute_in_transaction(client, delete_callback)
 
     # ------------------------------------------------------------------
     # Delete Cloudinary files after successful DB removal

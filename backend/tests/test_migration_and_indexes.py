@@ -20,6 +20,23 @@ def test_required_tenant_indexes_are_created(monkeypatch):
     assert vehicle_index["key"] == [("tenantId", 1), ("registrationNumber", 1)]
     assert vehicle_index["partialFilterExpression"] == {"deletedAt": {"$type": "null"}, "registrationNumber": {"$type": "string"}}
 
+    # Bookings indexes
+    booking_indexes = database.bookings.index_information()
+    assert booking_indexes["uq_bookings_tenant_number"]["key"] == [("tenantId", 1), ("bookingNumber", 1)]
+    assert booking_indexes["uq_bookings_tenant_number"]["unique"] is True
+    assert booking_indexes["ix_bookings_overlap_scan"]["key"] == [
+        ("tenantId", 1), ("vehicleId", 1), ("status", 1), ("startDate", 1), ("endDate", 1)
+    ]
+    assert booking_indexes["ix_bookings_tenant_customer"]["key"] == [("tenantId", 1), ("customerId", 1)]
+    assert booking_indexes["ix_bookings_tenant_deleted_status_created"]["key"] == [
+        ("tenantId", 1), ("deletedAt", 1), ("status", 1), ("createdAt", -1)
+    ]
+    assert booking_indexes["uq_bookings_tenant_vehicle_active"]["key"] == [("tenantId", 1), ("vehicleId", 1)]
+    assert booking_indexes["uq_bookings_tenant_vehicle_active"]["unique"] is True
+    assert booking_indexes["uq_bookings_tenant_vehicle_active"]["partialFilterExpression"] == {
+        "status": "Active", "deletedAt": {"$type": "null"}
+    }
+
 
 def test_migration_dry_run_aborts_when_target_tenant_has_duplicate_plate(monkeypatch):
     client = mongomock.MongoClient()

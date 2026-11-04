@@ -65,6 +65,12 @@ class BookingModel(BaseModel):
     vehicle_snapshot: VehicleSnapshot = Field(..., alias="vehicleSnapshot")
     customer_snapshot: CustomerSnapshot = Field(..., alias="customerSnapshot")
     notes: Optional[str] = None
+    cancel_reason: Optional[str] = Field(default=None, alias="cancelReason")
+
+    confirmed_at: Optional[datetime] = Field(default=None, alias="confirmedAt")
+    activated_at: Optional[datetime] = Field(default=None, alias="activatedAt")
+    completed_at: Optional[datetime] = Field(default=None, alias="completedAt")
+    cancelled_at: Optional[datetime] = Field(default=None, alias="cancelledAt")
 
     tenant_id: Optional[ObjectId] = Field(default=None, alias="tenantId")
     created_by: Optional[ObjectId] = Field(default=None, alias="createdBy")

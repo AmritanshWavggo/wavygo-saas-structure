@@ -71,6 +71,24 @@ class BookingTransactionTimeoutError(BookingDomainError):
     pass
 
 
+class BookingNotFoundError(BookingDomainError):
+    """Booking not found or soft-deleted in tenant (maps to 404)."""
+    pass
+
+
+class BookingStatusConflictError(BookingDomainError):
+    """Booking status transition or CAS update conflict (maps to 409)."""
+    pass
+
+
+TRANSITION_TIMESTAMP_MAP = {
+    BookingStatus.confirmed.value: "confirmedAt",
+    BookingStatus.active.value: "activatedAt",
+    BookingStatus.completed.value: "completedAt",
+    BookingStatus.cancelled.value: "cancelledAt",
+}
+
+
 def validate_booking_dates(
     start_date: datetime,
     end_date: datetime,
@@ -134,22 +152,40 @@ def check_overlap(
     exclude_booking_id: Optional[ObjectId] = None,
     buffer_minutes: int = 0,
     session: Optional[ClientSession] = None,
+    now: Optional[datetime] = None,
 ) -> Optional[dict]:
     """
     Query for overlapping bookings occupying the vehicle interval [start, end).
     Two intervals [A_start, A_end) and [B_start, B_end) overlap iff:
         A_start < B_end and A_end > B_start
+
+    Rule: An Active booking's effective end is max(endDate, now).
     """
     effective_start = start_date - timedelta(minutes=buffer_minutes)
     effective_end = end_date + timedelta(minutes=buffer_minutes)
 
+    if now is None:
+        now = _now_utc()
+
+    if effective_start < now:
+        overlap_filter = {
+            "$or": [
+                {"status": {"$in": ["Pending", "Confirmed"]}, "endDate": {"$gt": effective_start}},
+                {"status": "Active"},
+            ]
+        }
+    else:
+        overlap_filter = {
+            "status": {"$in": list(BLOCKING_STATUSES)},
+            "endDate": {"$gt": effective_start},
+        }
+
     query = {
         "tenantId": tenant_id,
         "vehicleId": vehicle_id,
-        "status": {"$in": list(BLOCKING_STATUSES)},
         "deletedAt": None,
         "startDate": {"$lt": effective_end},
-        "endDate": {"$gt": effective_start},
+        **overlap_filter,
     }
     if exclude_booking_id:
         query["_id"] = {"$ne": exclude_booking_id}
@@ -336,3 +372,357 @@ def create_booking_guarded(
 
     execute_in_transaction(client, transaction_callback)
     return created_booking_doc
+
+
+def derive_vehicle_availability(vehicle_doc: dict, db: Any, tenant_id: ObjectId) -> str:
+    """
+    Derive dynamic vehicle availability on read:
+    - If stored availability is 'Maintenance', vehicle is 'Maintenance'.
+    - If vehicle has an Active booking (with deletedAt == None), vehicle is 'Rented'.
+    - Otherwise, vehicle is 'Available'.
+    """
+    if (
+        vehicle_doc.get("availability") == "Maintenance"
+        or vehicle_doc.get("fleetAvailability") == "Maintenance"
+    ):
+        return "Maintenance"
+
+    v_id = vehicle_doc["_id"] if "_id" in vehicle_doc else ObjectId(vehicle_doc["id"])
+    has_active_booking = db["bookings"].find_one(
+        {
+            "tenantId": tenant_id,
+            "vehicleId": v_id,
+            "status": BookingStatus.active.value,
+            "deletedAt": None,
+        }
+    )
+    if has_active_booking:
+        return "Rented"
+
+    return "Available"
+
+
+def transition_booking_status(
+    db: Any,
+    tenant_id: ObjectId,
+    booking_id: ObjectId,
+    target_status: BookingStatus,
+    user_role: str,
+    cancel_reason: Optional[str] = None,
+    clock_now: Optional[datetime] = None,
+) -> dict:
+    """
+    Atomic status transition with CAS (compare-and-set) update and role permissions:
+    - Allowed transitions:
+      Pending -> Confirmed, Cancelled
+      Confirmed -> Active, Cancelled
+      Active -> Completed
+    - Roles:
+      Staff cannot cancel Confirmed bookings (Owner/Manager only).
+      Staff may confirm, activate, complete, and cancel Pending.
+    - Confirmed -> Active is refused (409) if the vehicle already has an Active booking.
+    - Uses explicit timestamp map:
+      Confirmed -> confirmedAt, Active -> activatedAt, Completed -> completedAt, Cancelled -> cancelledAt.
+      Computes `now` once per update.
+    """
+    now = clock_now if clock_now is not None else _now_utc()
+    tgt = target_status.value
+
+    booking = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None})
+    if not booking:
+        raise BookingNotFoundError("Booking not found.")
+
+    curr = booking["status"]
+
+    if curr in [BookingStatus.completed.value, BookingStatus.cancelled.value, BookingStatus.no_show.value]:
+        raise BookingStatusConflictError(f"Cannot transition terminal booking from '{curr}' to '{tgt}'.")
+
+    allowed_transitions = {
+        BookingStatus.pending.value: [BookingStatus.confirmed.value, BookingStatus.cancelled.value],
+        BookingStatus.confirmed.value: [BookingStatus.active.value, BookingStatus.cancelled.value],
+        BookingStatus.active.value: [BookingStatus.completed.value],
+    }
+
+    if tgt not in allowed_transitions.get(curr, []):
+        raise BookingStatusConflictError(f"Invalid status transition from '{curr}' to '{tgt}'.")
+
+    # Role checks: Staff cannot cancel a Confirmed booking
+    if curr == BookingStatus.confirmed.value and tgt == BookingStatus.cancelled.value:
+        if user_role not in ["owner", "manager"]:
+            raise BookingValidationError("Staff members cannot cancel confirmed bookings.")
+
+    # Confirmed -> Active check: vehicle cannot already have an Active booking
+    if tgt == BookingStatus.active.value:
+        active_existing = db["bookings"].find_one(
+            {
+                "tenantId": tenant_id,
+                "vehicleId": booking["vehicleId"],
+                "status": BookingStatus.active.value,
+                "deletedAt": None,
+                "_id": {"$ne": booking_id},
+            }
+        )
+        if active_existing:
+            raise OverlapConflictError("Vehicle already has an active booking in progress.")
+
+    ts_field = TRANSITION_TIMESTAMP_MAP.get(tgt)
+    update_fields: dict[str, Any] = {
+        "status": tgt,
+        "updatedAt": now,
+    }
+    if ts_field:
+        update_fields[ts_field] = now
+    if tgt == BookingStatus.cancelled.value and cancel_reason:
+        update_fields["cancelReason"] = cancel_reason
+
+    # Compare-and-Set atomic update
+    res = db["bookings"].update_one(
+        {
+            "_id": booking_id,
+            "tenantId": tenant_id,
+            "status": curr,
+            "deletedAt": None,
+        },
+        {"$set": update_fields},
+    )
+    if res.matched_count == 0:
+        latest = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None})
+        if not latest:
+            raise BookingNotFoundError("Booking not found.")
+        raise BookingStatusConflictError(f"Booking was modified concurrently and is no longer '{curr}'.")
+
+    return db["bookings"].find_one({"_id": booking_id})
+
+
+def update_booking_guarded(
+    client: Any,
+    db: Any,
+    tenant_id: ObjectId,
+    booking_id: ObjectId,
+    user_role: str,
+    customer_id: Optional[str] = None,
+    vehicle_id: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    pickup_location: Optional[str] = None,
+    discount_paise: Optional[int] = None,
+    notes: Optional[str] = None,
+    grace_period_days: int = 1,
+    clock_now: Optional[datetime] = None,
+) -> dict:
+    """
+    Guarded booking update with CAS check:
+    - Core fields (dates, vehicleId, customerId) editable only before Active (Pending, Confirmed).
+    - Notes can be updated in Active, but completed/cancelled bookings are read-only.
+    - Snapshot rate is preserved if vehicle unchanged.
+    - Returns updated document with oldTotalAmountPaise and newTotalAmountPaise.
+    """
+    now = clock_now if clock_now is not None else _now_utc()
+    updated_doc: dict[str, Any] = {}
+
+    def transaction_callback(session: Optional[ClientSession]) -> None:
+        booking = db["bookings"].find_one(
+            {"_id": booking_id, "tenantId": tenant_id, "deletedAt": None},
+            session=session,
+        )
+        if not booking:
+            raise BookingNotFoundError("Booking not found.")
+
+        curr_status = booking["status"]
+        if curr_status in [BookingStatus.completed.value, BookingStatus.cancelled.value, BookingStatus.no_show.value]:
+            raise BookingStatusConflictError("Completed and cancelled bookings cannot be edited.")
+
+        core_change = (
+            customer_id is not None
+            or vehicle_id is not None
+            or start_date is not None
+            or end_date is not None
+            or pickup_location is not None
+            or discount_paise is not None
+        )
+
+        if core_change and curr_status not in [BookingStatus.pending.value, BookingStatus.confirmed.value]:
+            raise BookingStatusConflictError("Active bookings cannot modify rental dates, vehicle, customer, or pricing.")
+
+        update_fields: dict[str, Any] = {"updatedAt": now}
+        old_total = booking["totalAmountPaise"]
+
+        target_vehicle_oid = booking["vehicleId"]
+        target_customer_oid = booking["customerId"]
+        target_start = start_date if start_date is not None else booking["startDate"]
+        target_end = end_date if end_date is not None else booking["endDate"]
+        daily_rate_paise = booking["dailyRatePaise"]  # Default to snapshot rate
+
+        # Serialize on current vehicle guard
+        apply_booking_guard(db, target_vehicle_oid, tenant_id, session=session)
+
+        # 1. Customer change (validated in-tenant)
+        if customer_id is not None and ObjectId(customer_id) != target_customer_oid:
+            new_cust_oid = ObjectId(customer_id)
+            new_cust = db["customers"].find_one(
+                {"_id": new_cust_oid, "tenantId": tenant_id, "deletedAt": None},
+                session=session,
+            )
+            if not new_cust:
+                raise CustomerNotFoundError("Customer not found.")
+            target_customer_oid = new_cust_oid
+            update_fields["customerId"] = new_cust_oid
+            update_fields["customerSnapshot"] = {
+                "name": new_cust.get("name", ""),
+                "phone": new_cust.get("phone", ""),
+                "email": new_cust.get("email"),
+            }
+
+        # 2. Vehicle change (allowed only before Active)
+        # TODO: Forbid vehicle change once payments exist in Phase 4.
+        if vehicle_id is not None and ObjectId(vehicle_id) != target_vehicle_oid:
+            new_veh_oid = ObjectId(vehicle_id)
+            apply_booking_guard(db, new_veh_oid, tenant_id, session=session)
+            new_veh = db["vehicles"].find_one(
+                {"_id": new_veh_oid, "tenantId": tenant_id, "deletedAt": None},
+                session=session,
+            )
+            if not new_veh:
+                raise VehicleNotFoundError("Vehicle not found.")
+            if new_veh.get("availability") == "Maintenance":
+                raise VehicleUnderMaintenanceError("Vehicle is currently under maintenance.")
+
+            daily_rate_raw = new_veh.get("dailyRate") or new_veh.get("price")
+            if daily_rate_raw is None or daily_rate_raw <= 0:
+                raise VehicleInvalidRateError("Vehicle has no valid daily rate.")
+            daily_rate_paise = float_to_paise(daily_rate_raw)
+            if daily_rate_paise <= 0:
+                raise VehicleInvalidRateError("Vehicle has no valid daily rate.")
+
+            target_vehicle_oid = new_veh_oid
+            update_fields["vehicleId"] = new_veh_oid
+            update_fields["dailyRatePaise"] = daily_rate_paise
+            update_fields["securityDepositPaise"] = float_to_paise(new_veh.get("securityDeposit"))
+            update_fields["vehicleSnapshot"] = {
+                "name": new_veh.get("name", ""),
+                "registration": new_veh.get("registration", ""),
+                "registrationNumber": new_veh.get("registrationNumber") or new_veh.get("registration", "").replace(" ", "").upper(),
+                "type": new_veh.get("type"),
+            }
+
+        # 3. Dates validation & overlap check
+        if start_date is not None or end_date is not None or vehicle_id is not None:
+            validate_booking_dates(
+                start_date=target_start,
+                end_date=target_end,
+                now=now,
+                grace_period_days=grace_period_days,
+            )
+            conflict = check_overlap(
+                db=db,
+                tenant_id=tenant_id,
+                vehicle_id=target_vehicle_oid,
+                start_date=target_start,
+                end_date=target_end,
+                exclude_booking_id=booking_id,
+                session=session,
+                now=now,
+            )
+            if conflict:
+                raise OverlapConflictError("Vehicle is already booked for the selected rental period.")
+
+            update_fields["startDate"] = target_start
+            update_fields["endDate"] = target_end
+            new_billable_days = calculate_billable_days(target_start, target_end)
+            update_fields["billableDays"] = new_billable_days
+        else:
+            new_billable_days = booking["billableDays"]
+
+        # 4. Pricing recalculation from snapshot rate (or new rate if vehicle changed)
+        new_base_amount_paise = new_billable_days * daily_rate_paise
+        update_fields["baseAmountPaise"] = new_base_amount_paise
+
+        effective_discount = (
+            discount_paise if discount_paise is not None else booking.get("discountPaise", 0)
+        )
+        if discount_paise is not None and discount_paise > 0 and user_role == "staff":
+            raise BookingValidationError("Staff members cannot apply discounts.")
+
+        if effective_discount > new_base_amount_paise:
+            raise BookingValidationError("Discount cannot exceed base rental amount.")
+
+        update_fields["discountPaise"] = effective_discount
+        new_total_paise = new_base_amount_paise - effective_discount
+        update_fields["totalAmountPaise"] = new_total_paise
+
+        if pickup_location is not None:
+            update_fields["pickupLocation"] = pickup_location
+        if notes is not None:
+            update_fields["notes"] = notes
+
+        # CAS update: must still be in the expected pre-active status if core fields changed
+        status_cas = (
+            [BookingStatus.pending.value, BookingStatus.confirmed.value]
+            if core_change
+            else [BookingStatus.pending.value, BookingStatus.confirmed.value, BookingStatus.active.value]
+        )
+        res = db["bookings"].update_one(
+            {
+                "_id": booking_id,
+                "tenantId": tenant_id,
+                "status": {"$in": status_cas},
+                "deletedAt": None,
+            },
+            {"$set": update_fields},
+            session=session,
+        )
+        if res.matched_count == 0:
+            latest = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None}, session=session)
+            if not latest:
+                raise BookingNotFoundError("Booking not found.")
+            raise BookingStatusConflictError(f"Cannot edit booking in status '{latest['status']}'.")
+
+        res_doc = db["bookings"].find_one({"_id": booking_id}, session=session)
+        res_doc["oldTotalAmountPaise"] = old_total
+        res_doc["newTotalAmountPaise"] = new_total_paise
+        updated_doc.update(res_doc)
+
+    execute_in_transaction(client, transaction_callback)
+    return updated_doc
+
+
+def soft_delete_booking(
+    db: Any,
+    tenant_id: ObjectId,
+    booking_id: ObjectId,
+    user_role: str,
+) -> None:
+    """
+    Soft-delete booking with role and status invariants:
+    - Allowed only for Pending and Cancelled bookings.
+    - Owner and manager only (staff -> 403).
+    - Confirmed or active -> 409.
+    - Completed -> 409.
+    """
+    if user_role not in ["owner", "manager"]:
+        raise BookingValidationError("Insufficient permissions to delete bookings.")
+
+    booking = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None})
+    if not booking:
+        raise BookingNotFoundError("Booking not found.")
+
+    curr_status = booking["status"]
+    if curr_status in [BookingStatus.confirmed.value, BookingStatus.active.value]:
+        raise BookingStatusConflictError("Cannot delete an active or confirmed booking. Cancel the booking first.")
+    if curr_status == BookingStatus.completed.value:
+        raise BookingStatusConflictError("Completed bookings cannot be deleted.")
+
+    res = db["bookings"].update_one(
+        {
+            "_id": booking_id,
+            "tenantId": tenant_id,
+            "status": {"$in": [BookingStatus.pending.value, BookingStatus.cancelled.value]},
+            "deletedAt": None,
+        },
+        {"$set": {"deletedAt": _now_utc(), "updatedAt": _now_utc()}},
+    )
+    if res.matched_count == 0:
+        latest = db["bookings"].find_one({"_id": booking_id, "tenantId": tenant_id, "deletedAt": None})
+        if not latest:
+            raise BookingNotFoundError("Booking not found.")
+        raise BookingStatusConflictError(f"Cannot delete booking in status '{latest['status']}'.")

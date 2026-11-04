@@ -119,16 +119,22 @@ def ensure_indexes() -> None:
             name="uq_bookings_tenant_number",
         )
         bookings.create_index(
-            [("tenantId", ASCENDING), ("deletedAt", ASCENDING), ("startDate", DESCENDING)],
-            name="ix_bookings_tenant_deleted_start",
-        )
-        bookings.create_index(
             [("tenantId", ASCENDING), ("vehicleId", ASCENDING), ("status", ASCENDING), ("startDate", ASCENDING), ("endDate", ASCENDING)],
             name="ix_bookings_overlap_scan",
         )
         bookings.create_index(
-            [("tenantId", ASCENDING), ("customerId", ASCENDING), ("deletedAt", ASCENDING)],
-            name="ix_bookings_customer_history",
+            [("tenantId", ASCENDING), ("customerId", ASCENDING)],
+            name="ix_bookings_tenant_customer",
+        )
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("deletedAt", ASCENDING), ("status", ASCENDING), ("createdAt", DESCENDING)],
+            name="ix_bookings_tenant_deleted_status_created",
+        )
+        bookings.create_index(
+            [("tenantId", ASCENDING), ("vehicleId", ASCENDING)],
+            unique=True,
+            partialFilterExpression={"status": "Active", "deletedAt": {"$type": "null"}},
+            name="uq_bookings_tenant_vehicle_active",
         )
 
         logger.info("Database security and domain indexes are ready.")
