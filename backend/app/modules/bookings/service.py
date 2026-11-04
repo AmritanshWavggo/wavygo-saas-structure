@@ -4,7 +4,7 @@ Core domain logic, transaction runner, and concurrency controls for Bookings.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable, Optional
 
@@ -24,6 +24,11 @@ from app.modules.bookings.models import (
 )
 
 MAX_BOOKING_DURATION_DAYS = 90
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class BookingDomainError(Exception):
@@ -69,14 +74,16 @@ class BookingTransactionTimeoutError(BookingDomainError):
 def validate_booking_dates(
     start_date: datetime,
     end_date: datetime,
+    now: datetime,
     grace_period_days: int = 1,
-    now: Optional[datetime] = None,
 ) -> None:
     """
     Validate rental interval bounds and constraints:
     - End date must be strictly after start date.
     - Duration cannot exceed 90 days.
-    - Start date cannot be before the configured grace period.
+    - Start date cannot be before the configured grace period:
+      Earliest allowed start = 00:00 IST of the day (today_IST - booking_grace_period_days), converted to UTC.
+      Uses the injected clock (now) only; no datetime.now inside the function.
     """
     if end_date <= start_date:
         raise BookingValidationError("End date must be strictly after start date.")
@@ -85,11 +92,15 @@ def validate_booking_dates(
     if duration_seconds > MAX_BOOKING_DURATION_DAYS * 86400:
         raise BookingValidationError("Rental duration cannot exceed 90 days.")
 
-    if now is None:
-        now = datetime.now(timezone.utc)
+    now_utc = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+    now_ist = now_utc.astimezone(IST)
+    today_ist = now_ist.date()
+    target_date_ist = today_ist - timedelta(days=grace_period_days)
+    start_of_day_ist = datetime.combine(target_date_ist, time.min, tzinfo=IST)
+    earliest_allowed_utc = start_of_day_ist.astimezone(timezone.utc)
 
-    grace_boundary = now - timedelta(days=grace_period_days)
-    if start_date < grace_boundary:
+    start_utc = start_date if start_date.tzinfo is not None else start_date.replace(tzinfo=timezone.utc)
+    if start_utc < earliest_allowed_utc:
         raise BookingValidationError("Booking start date cannot be before the grace window.")
 
 
@@ -215,11 +226,16 @@ def create_booking_guarded(
     4. Overlap query inside transaction.
     5. Insert booking with frozen rate/vehicle/customer snapshots.
     """
-    validate_booking_dates(start_date, end_date, grace_period_days=grace_period_days, now=clock_now)
+    now = clock_now if clock_now is not None else _now_utc()
+    validate_booking_dates(
+        start_date=start_date,
+        end_date=end_date,
+        now=now,
+        grace_period_days=grace_period_days,
+    )
     booking_number = generate_booking_number(db, tenant_id, year=start_date.year)
     billable_days = calculate_billable_days(start_date, end_date)
 
-    now = clock_now if clock_now is not None else datetime.now(timezone.utc)
     created_booking_doc: dict[str, Any] = {}
 
     def transaction_callback(session: Optional[ClientSession]) -> None:

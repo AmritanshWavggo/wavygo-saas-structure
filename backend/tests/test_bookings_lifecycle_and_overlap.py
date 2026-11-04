@@ -296,7 +296,7 @@ def test_duration_90_days_plus_one_second_rejected(env):
     assert "cannot exceed 90 days" in res.text
 
 
-# Frozen clock for deterministic grace window tests (midnight safe)
+# Frozen clock for deterministic grace window tests (midnight safe in IST)
 FROZEN_CLOCK = datetime(2026, 11, 10, 12, 0, 0, tzinfo=timezone.utc)
 
 
@@ -304,11 +304,12 @@ def test_start_just_inside_grace_window_accepted(env, monkeypatch):
     client = env["client"]
     token = env["token_a"]
 
-    # Grace window: 1 day before frozen clock -> 2026-11-09T12:00:00Z
-    # 1 second after boundary -> inside grace window
-    monkeypatch.setattr(bookings_service, "datetime", type("MockDT", (), {"now": staticmethod(lambda tz=None: FROZEN_CLOCK)}))
+    # Injected clock = 2026-11-10T12:00:00Z (17:30 IST on Nov 10).
+    # Grace window: 1 day -> 00:00 IST of Nov 9 = 2026-11-08T18:30:00Z.
+    # 2026-11-08T18:30:00Z is just inside the grace boundary -> 201 accepted.
+    monkeypatch.setattr(bookings_service, "_now_utc", lambda: FROZEN_CLOCK)
 
-    start = FROZEN_CLOCK - timedelta(days=1) + timedelta(seconds=1)
+    start = datetime(2026, 11, 8, 18, 30, 0, tzinfo=timezone.utc)
     end = start + timedelta(days=2)
 
     res = client.post(
@@ -329,10 +330,10 @@ def test_start_just_outside_grace_window_rejected(env, monkeypatch):
     client = env["client"]
     token = env["token_a"]
 
-    # 1 second before boundary -> outside grace window
-    monkeypatch.setattr(bookings_service, "datetime", type("MockDT", (), {"now": staticmethod(lambda tz=None: FROZEN_CLOCK)}))
+    # 2026-11-08T18:29:59Z is 1 second before the 18:30:00Z boundary -> rejected (422).
+    monkeypatch.setattr(bookings_service, "_now_utc", lambda: FROZEN_CLOCK)
 
-    start = FROZEN_CLOCK - timedelta(days=1) - timedelta(seconds=1)
+    start = datetime(2026, 11, 8, 18, 29, 59, tzinfo=timezone.utc)
     end = start + timedelta(days=2)
 
     res = client.post(
@@ -348,6 +349,88 @@ def test_start_just_outside_grace_window_rejected(env, monkeypatch):
     )
     assert res.status_code == 422
     assert "grace window" in res.text
+
+
+def test_grace_window_advances_at_midnight_ist(env, monkeypatch):
+    client = env["client"]
+    token = env["token_a"]
+
+    # Clock moved to 2026-11-10T18:31:00Z (00:01 IST on Nov 11).
+    # Today in IST is Nov 11. Grace period 1 day -> 00:00 IST of Nov 10 = 2026-11-09T18:30:00Z.
+    clock_next_day_ist = datetime(2026, 11, 10, 18, 31, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(bookings_service, "_now_utc", lambda: clock_next_day_ist)
+
+    # 1. 2026-11-09T18:29:59Z rejected (just outside new boundary)
+    start_outside = datetime(2026, 11, 9, 18, 29, 59, tzinfo=timezone.utc)
+    res_outside = client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "customerId": env["customer_a_id"],
+            "vehicleId": env["vehicle_a_id"],
+            "startDate": start_outside.isoformat(),
+            "endDate": (start_outside + timedelta(days=2)).isoformat(),
+            "pickupLocation": "HQ",
+        },
+    )
+    assert res_outside.status_code == 422
+    assert "grace window" in res_outside.text
+
+    # 2. 2026-11-09T18:30:00Z accepted (just inside new boundary)
+    start_inside = datetime(2026, 11, 9, 18, 30, 0, tzinfo=timezone.utc)
+    res_inside = client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "customerId": env["customer_a_id"],
+            "vehicleId": env["vehicle_a_id"],
+            "startDate": start_inside.isoformat(),
+            "endDate": (start_inside + timedelta(days=2)).isoformat(),
+            "pickupLocation": "HQ",
+        },
+    )
+    assert res_inside.status_code == 201
+
+
+def test_grace_window_zero_days_means_start_of_today_ist(env, monkeypatch):
+    client = env["client"]
+    token = env["token_a"]
+
+    # booking_grace_period_days = 0 means start of today in IST (00:00 IST on Nov 10).
+    # Converted to UTC: 2026-11-09T18:30:00Z.
+    monkeypatch.setattr(settings, "booking_grace_period_days", 0)
+    monkeypatch.setattr(bookings_service, "_now_utc", lambda: FROZEN_CLOCK)
+
+    # 1. 2026-11-09T18:29:59Z rejected (just outside)
+    start_outside = datetime(2026, 11, 9, 18, 29, 59, tzinfo=timezone.utc)
+    res_outside = client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "customerId": env["customer_a_id"],
+            "vehicleId": env["vehicle_a_id"],
+            "startDate": start_outside.isoformat(),
+            "endDate": (start_outside + timedelta(days=2)).isoformat(),
+            "pickupLocation": "HQ",
+        },
+    )
+    assert res_outside.status_code == 422
+    assert "grace window" in res_outside.text
+
+    # 2. 2026-11-09T18:30:00Z accepted (just inside)
+    start_inside = datetime(2026, 11, 9, 18, 30, 0, tzinfo=timezone.utc)
+    res_inside = client.post(
+        "/api/v1/bookings",
+        headers={"Authorization": f"Bearer {token}"},
+        json={
+            "customerId": env["customer_a_id"],
+            "vehicleId": env["vehicle_a_id"],
+            "startDate": start_inside.isoformat(),
+            "endDate": (start_inside + timedelta(days=2)).isoformat(),
+            "pickupLocation": "HQ",
+        },
+    )
+    assert res_inside.status_code == 201
 
 
 def test_unauthenticated_post_bookings_returns_401(env):

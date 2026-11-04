@@ -39,6 +39,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             409: "CONFLICT",
             422: "VALIDATION_ERROR",
             429: "TOO_MANY_REQUESTS",
+            503: "SERVICE_UNAVAILABLE",
         }.get(exc.status_code, "REQUEST_ERROR")
 
         details = None
