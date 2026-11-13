@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, date, timezone
 import time
 import uuid
@@ -173,6 +174,84 @@ class BookingService:
             except Exception as exc:
                 logger.error("Failed to persist booking to Mongo: %s", exc)
 
+            # Auto-sync or create customer in customers module collection
+            try:
+                phone_raw = payload.customer.phone.strip() if payload.customer.phone else ""
+                phone_norm = re.sub(r"\D", "", phone_raw)
+                c_name = payload.customer.name.strip()
+                c_email = (
+                    payload.customer.email.strip().lower()
+                    if payload.customer.email and payload.customer.email.strip()
+                    else None
+                )
+
+                t_id_val = None
+                if tenant_id:
+                    t_id_val = ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id
+
+                cust_query: dict[str, Any] = {}
+                if t_id_val is not None:
+                    cust_query["tenant_id"] = t_id_val
+
+                conds: list[dict[str, Any]] = []
+                if payload.customer.customer_id:
+                    if ObjectId.is_valid(payload.customer.customer_id):
+                        conds.append({"_id": ObjectId(payload.customer.customer_id)})
+                    else:
+                        conds.append({"id": payload.customer.customer_id})
+                if phone_norm:
+                    conds.append({"phone_normalized": phone_norm})
+                if phone_raw:
+                    conds.append({"phone": phone_raw})
+                if c_email:
+                    conds.append({"email": c_email})
+
+                if conds:
+                    cust_query["$or"] = conds
+                else:
+                    cust_query["name"] = c_name
+
+                now_utc = datetime.now(timezone.utc)
+                existing_cust = db["customers"].find_one(cust_query)
+                if existing_cust:
+                    update_ops: dict[str, Any] = {
+                        "$inc": {
+                            "bookings": 1,
+                            "active": 1,
+                            "paid": float(initial_paid),
+                            "pending": float(pending_amount),
+                        },
+                        "$set": {
+                            "updated_at": now_utc,
+                        },
+                    }
+                    if c_email and not existing_cust.get("email"):
+                        update_ops["$set"]["email"] = c_email
+                    db["customers"].update_one({"_id": existing_cust["_id"]}, update_ops)
+                    customer_details["id"] = str(existing_cust["_id"])
+                    record["customer_details"]["id"] = str(existing_cust["_id"])
+                else:
+                    new_cust: dict[str, Any] = {
+                        "name": c_name,
+                        "phone": phone_raw,
+                        "phone_normalized": phone_norm,
+                        "email": c_email,
+                        "status": "Verified",
+                        "bookings": 1,
+                        "active": 1,
+                        "paid": float(initial_paid),
+                        "pending": float(pending_amount),
+                        "created_at": now_utc,
+                        "updated_at": now_utc,
+                    }
+                    if t_id_val is not None:
+                        new_cust["tenant_id"] = t_id_val
+                    ins_res = db["customers"].insert_one(new_cust)
+                    customer_details["id"] = str(ins_res.inserted_id)
+                    record["customer_details"]["id"] = str(ins_res.inserted_id)
+            except Exception as cust_err:
+                logger.warning("Could not auto-sync customer during offline booking: %s", cust_err)
+
         try:
             from app.modules.notifications.service import create_notification
             create_notification(
@@ -330,6 +409,25 @@ class BookingService:
             except Exception:
                 pass
 
+        # Update customer active count if booking ended
+        if payload.status in ("Completed", "Cancelled") and db is not None:
+            try:
+                c_id = booking.customer_details.id if booking.customer_details else None
+                c_cond: dict[str, Any] = {}
+                if c_id and ObjectId.is_valid(c_id):
+                    c_cond["_id"] = ObjectId(c_id)
+                elif booking.customer:
+                    c_cond["name"] = booking.customer
+                if c_cond:
+                    db["customers"].update_one(
+                        c_cond,
+                        {
+                            "$inc": {"active": -1},
+                            "$set": {"updated_at": datetime.now(timezone.utc)},
+                        },
+                    )
+            except Exception:
+                pass
         # Update in memory
         if booking_id in self._memory_bookings:
             mem = self._memory_bookings[booking_id]
@@ -377,7 +475,25 @@ class BookingService:
             except Exception as exc:
                 logger.error("Failed to update booking in Mongo: %s", exc)
 
-        # Update in memory cache
+        # Update customer paid and pending metrics in Mongo
+        if db is not None:
+            try:
+                c_id = booking.customer_details.id if booking.customer_details else None
+                c_cond: dict[str, Any] = {}
+                if c_id and ObjectId.is_valid(c_id):
+                    c_cond["_id"] = ObjectId(c_id)
+                elif booking.customer:
+                    c_cond["name"] = booking.customer
+                if c_cond:
+                    db["customers"].update_one(
+                        c_cond,
+                        {
+                            "$inc": {"paid": float(payment.amount), "pending": -float(payment.amount)},
+                            "$set": {"updated_at": datetime.now(timezone.utc)},
+                        },
+                    )
+            except Exception:
+                pass
         if booking_id in self._memory_bookings:
             mem = self._memory_bookings[booking_id]
             mem["paid"] = new_paid

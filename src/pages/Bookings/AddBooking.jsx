@@ -195,12 +195,15 @@ function AddBooking() {
           backendSynced: true,
         }
 
+        const custPhone = (customer.phone || activeCustomer?.phone || '').trim()
+        const custEmail = (customer.email || activeCustomer?.email || '').trim()
+
         if (customerMode === 'new') {
           addRecord('customers', {
             id: result.customer_details?.id || `CU-${String(Date.now()).slice(-5)}`,
             name: customerName,
-            phone: customer.phone.trim(),
-            email: customer.email.trim(),
+            phone: custPhone,
+            email: custEmail,
             bookings: 1,
             active: 1,
             paid: result.paid,
@@ -211,7 +214,7 @@ function AddBooking() {
 
         if (syncOfflineBookings) await syncOfflineBookings()
         if (syncVehicles) await syncVehicles()
-        if (customerMode === 'new' && syncCustomers) await syncCustomers()
+        if (syncCustomers) await syncCustomers()
 
         setConfirmation({
           ...bookingRecord,

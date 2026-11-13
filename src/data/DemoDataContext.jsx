@@ -108,12 +108,87 @@ export function DemoDataProvider({ children }) {
         pending: c.pending ?? 0,
         backendSynced: true,
       }))
-      setData((current) => ({
-        ...current,
-        customers: mapped,
-      }))
+
+      setData((current) => {
+        const customerMap = new Map()
+
+        // 1. Add mapped backend customers
+        mapped.forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key) customerMap.set(key, c)
+        })
+
+        // 2. Retain any locally added customer
+        ;(current.customers || []).forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key && !customerMap.has(key)) {
+            customerMap.set(key, c)
+          }
+        })
+
+        // 3. Ensure any customer entered during bookings is displayed in customers
+        ;(current.bookings || []).forEach((b) => {
+          const cName = (b.customer || b.customer_details?.name || '').trim()
+          const cPhone = (b.phone || b.customer_details?.phone || '').trim()
+          const cEmail = (b.email || b.customer_details?.email || '').trim()
+          if (cName) {
+            const key = (cPhone || cName).toLowerCase().trim()
+            if (!customerMap.has(key)) {
+              customerMap.set(key, {
+                id: b.customer_details?.id || `CU-${String(b.id || Date.now()).replace(/\D/g, '').slice(-5) || '101'}`,
+                name: cName,
+                phone: cPhone || '—',
+                email: cEmail,
+                status: 'Verified',
+                bookings: 1,
+                active: b.status === 'Active' ? 1 : 0,
+                paid: Number(b.paid) || 0,
+                pending: Number(b.pending) || 0,
+                backendSynced: Boolean(b.backendSynced),
+              })
+            }
+          }
+        })
+
+        return {
+          ...current,
+          customers: Array.from(customerMap.values()),
+        }
+      })
     } catch (err) {
       console.warn('syncCustomers error:', err)
+      setData((current) => {
+        const customerMap = new Map()
+        ;(current.customers || []).forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key) customerMap.set(key, c)
+        })
+        ;(current.bookings || []).forEach((b) => {
+          const cName = (b.customer || b.customer_details?.name || '').trim()
+          const cPhone = (b.phone || b.customer_details?.phone || '').trim()
+          if (cName) {
+            const key = (cPhone || cName).toLowerCase().trim()
+            if (!customerMap.has(key)) {
+              customerMap.set(key, {
+                id: b.customer_details?.id || `CU-${String(b.id || Date.now()).replace(/\D/g, '').slice(-5) || '101'}`,
+                name: cName,
+                phone: cPhone || '—',
+                email: b.email || b.customer_details?.email || '',
+                status: 'Verified',
+                bookings: 1,
+                active: b.status === 'Active' ? 1 : 0,
+                paid: Number(b.paid) || 0,
+                pending: Number(b.pending) || 0,
+                backendSynced: false,
+              })
+            }
+          }
+        })
+        return {
+          ...current,
+          customers: Array.from(customerMap.values()),
+        }
+      })
     }
   }
 
@@ -148,6 +223,8 @@ export function DemoDataProvider({ children }) {
         ...current,
         bookings: mapped,
       }))
+      // Sync customer records whenever bookings are refreshed
+      syncCustomers()
     } catch (err) {
       console.warn('syncOfflineBookings error:', err)
     }

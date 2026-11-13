@@ -170,7 +170,21 @@ function Customers() {
   const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
   const [selected, setSelected] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
   const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    syncCustomers?.()
+  }, [])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncCustomers) await syncCustomers()
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   const filtered = customers.filter((customer) =>
     `${customer.name} ${customer.phone} ${customer.email} ${customer.id}`.toLowerCase().includes(query.toLowerCase())
@@ -184,7 +198,15 @@ function Customers() {
       <PageHeader
         title="Customers"
         description="Get to know your customers and keep their rental history in one place."
-        action={<Button onClick={() => setShowForm(true)}><Plus size={16} />Add customer</Button>}
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => setShowForm(true)}><Plus size={16} />Add customer</Button>
+          </div>
+        }
       />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard label="Total customers" value={customers.length} caption="Managed customers" icon={Users} />
@@ -199,6 +221,8 @@ function Customers() {
         </div>
         <DataTable
           rows={filtered}
+          emptyTitle="No customers registered yet"
+          emptyText="Customers added through bookings or manually will appear here."
           columns={[
             { key: 'customer', label: 'Customer', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id} · {row.email}</span></button> },
             { key: 'phone', label: 'Phone' },
@@ -276,6 +300,10 @@ function Bookings() {
   const [paymentForm, setPaymentForm] = useState(null)
   const [isSyncing, setIsSyncing] = useState(false)
 
+  useEffect(() => {
+    syncOfflineBookings?.()
+  }, [])
+
   const online = bookings.filter((item) => item.type === 'Online').length
   const offline = bookings.filter((item) => item.type === 'Offline').length
   const revenue = bookings.reduce((sum, item) => sum + item.paid, 0)
@@ -327,6 +355,8 @@ function Bookings() {
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search ID, customer or vehicle…" /></div>
         <DataTable
           rows={filtered}
+          emptyTitle="No customers registered yet"
+          emptyText="Customers added through bookings or manually will appear here."
           columns={[
             {
               key: 'id',
@@ -1397,6 +1427,8 @@ function Documents() {
 
         <DataTable
           rows={filtered}
+          emptyTitle="No customers registered yet"
+          emptyText="Customers added through bookings or manually will appear here."
           columns={[
             {
               key: 'name',
