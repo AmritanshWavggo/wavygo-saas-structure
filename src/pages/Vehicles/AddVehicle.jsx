@@ -114,8 +114,9 @@ function AddVehicle() {
     setIsSubmitting(true)
     try {
       const formData = new FormData()
-      formData.append('makeModel', data.makeModel)
-      formData.append('registration', data.registration)
+      formData.append('makeModel', data.makeModel.trim())
+      formData.append('registration', data.registration.trim())
+      formData.append('registrationNumber', data.registration.trim().replace(/\s+/g, '').toUpperCase())
       formData.append('year', String(data.year))
       formData.append('type', data.type)
       formData.append('fuel', data.fuel)

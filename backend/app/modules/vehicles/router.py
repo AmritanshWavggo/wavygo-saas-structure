@@ -120,8 +120,18 @@ def _extract_tenant_id(tenant: Any) -> Optional[str]:
     if not tenant:
         return None
     if isinstance(tenant, dict):
-        return tenant.get("tenant_id") or tenant.get("tenantId") or (str(tenant["_id"]) if "_id" in tenant else None)
-    return getattr(tenant, "tenant_id", None) or getattr(tenant, "tenantId", None) or getattr(tenant, "id", None)
+        return (
+            tenant.get("tenant_id")
+            or tenant.get("tenantId")
+            or tenant.get("vendor_id")
+            or (str(tenant["_id"]) if "_id" in tenant else None)
+        )
+    return (
+        getattr(tenant, "tenant_id", None)
+        or getattr(tenant, "tenantId", None)
+        or getattr(tenant, "vendor_id", None)
+        or getattr(tenant, "id", None)
+    )
 
 
 def _vehicle_query(vehicle_id: str, tenant: Any = None) -> dict[str, Any]:
@@ -456,19 +466,21 @@ def create_vehicle(
     # 2. RC normalise & duplicate check
     # ------------------------------------------------------------------
     norm_rc: Optional[str] = None
-    if registration_number:
-        norm_rc = normalise_rc(registration_number)
+    rc_input = (registration_number or registration or "").strip()
+    if rc_input:
+        norm_rc = normalise_rc(rc_input)
         if norm_rc and not validate_rc_format(norm_rc):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"'{registration_number}' does not match the expected "
+                    f"'{rc_input}' does not match the expected "
                     "registration number format (e.g. GJ05AB4821)."
                 ),
             )
     if norm_rc:
         col = _get_vehicles_col()
-        if check_rc_duplicate(norm_rc, col):
+        tid = _extract_tenant_id(tenant)
+        if check_rc_duplicate(norm_rc, col, tenant_id=tid):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
@@ -597,6 +609,10 @@ def create_vehicle(
     # ------------------------------------------------------------------
     # 7. Insert into MongoDB; rollback Cloudinary on failure
     # ------------------------------------------------------------------
+    # Remove registrationNumber if None so MongoDB sparse unique index does not index null
+    if doc.get("registrationNumber") is None:
+        doc.pop("registrationNumber", None)
+
     col = _get_vehicles_col()
     try:
         result_insert = col.insert_one(doc)
@@ -866,19 +882,21 @@ def update_vehicle(
     # RC duplicate check if changing registrationNumber
     # ------------------------------------------------------------------
     norm_rc: Optional[str] = None
-    if registration_number is not None:
-        norm_rc = normalise_rc(registration_number)
+    rc_update = registration_number if registration_number is not None else registration
+    if rc_update is not None:
+        norm_rc = normalise_rc(rc_update)
         if norm_rc and not validate_rc_format(norm_rc):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"'{registration_number}' does not match the expected "
+                    f"'{rc_update}' does not match the expected "
                     "registration number format."
                 ),
             )
         if norm_rc:
             existing_rc = existing.get("registrationNumber")
-            if norm_rc != existing_rc and check_rc_duplicate(norm_rc, col):
+            tid = _extract_tenant_id(tenant)
+            if norm_rc != existing_rc and check_rc_duplicate(norm_rc, col, tenant_id=tid):
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
                     detail=(

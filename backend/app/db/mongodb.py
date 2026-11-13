@@ -96,6 +96,25 @@ def ensure_vehicle_indexes() -> None:
 
     try:
         vehicles_col = db["vehicles"]
+        # Drop legacy global unique index if present so it doesn't conflict across tenants or on nulls
+        try:
+            for idx in vehicles_col.list_indexes():
+                iname = idx.get("name", "")
+                ikey = idx.get("key", {})
+                if iname in ("uq_registration_number", "registrationNumber_1", "registration_number_1") or (
+                    idx.get("unique")
+                    and "tenant_id" not in ikey
+                    and "tenantId" not in ikey
+                    and ("registrationNumber" in ikey or "registration" in ikey)
+                ):
+                    try:
+                        vehicles_col.drop_index(iname)
+                        logger.info("Dropped legacy global vehicle index: %s", iname)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         # Unique sparse index on registrationNumber: prevents duplicate
         # registrations per-tenant. Sparse so vehicles without a registration
         # (legacy drafts) do not conflict.
