@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from bson import ObjectId
 
 from app.db.mongodb import get_database
 from app.modules.dashboard.schemas import (
@@ -45,18 +47,28 @@ class DashboardService:
                 for b in cursor:
                     b_id = str(b.get("id") or b.get("_id"))
                     is_arrived = b_id in self._arrived_ids or b.get("arrival_status") == "Arrived"
+                    v_det = b.get("vehicle_details") if isinstance(b.get("vehicle_details"), dict) else {}
+                    c_det = b.get("customer_details") if isinstance(b.get("customer_details"), dict) else {}
                     arrivals.append(
                         UpcomingArrivalItem(
                             bookingId=b_id,
-                            vehicleId=str(b.get("vehicle_id") or b.get("vehicle") or ""),
-                            customerId=str(b.get("customer_id") or ""),
+                            vehicleId=str(b.get("vehicle_id") or v_det.get("id") or b.get("vehicle") or ""),
+                            customerId=str(b.get("customer_id") or c_det.get("id") or ""),
                             staffId=str(b.get("staff_id") or ""),
                             pickupLocation=b.get("pickup_location") or "Vendor Hub",
                             returnLocation=b.get("return_location") or "Vendor Hub",
                             expectedAt=b.get("end_date_ms") or (now_ms + 3600_000),
                             status="Arrived" if is_arrived else "Upcoming",
-                            vehicle={"id": str(b.get("vehicle_id") or ""), "name": str(b.get("vehicle") or "Vehicle"), "registration": str(b.get("registration") or ""), "image": "🛵"},
-                            customer={"name": str(b.get("customer") or "Customer"), "phone": str(b.get("phone") or "")},
+                            vehicle={
+                                "id": str(b.get("vehicle_id") or v_det.get("id") or ""),
+                                "name": str(b.get("vehicle") or v_det.get("name") or "Vehicle"),
+                                "registration": str(b.get("registration") or v_det.get("registration") or ""),
+                                "image": "🛵",
+                            },
+                            customer={
+                                "name": str(b.get("customer") or c_det.get("name") or "Customer"),
+                                "phone": str(b.get("phone") or c_det.get("phone") or ""),
+                            },
                             staff={"name": str(b.get("staff") or "Operations Associate")},
                         )
                     )
@@ -67,7 +79,7 @@ class DashboardService:
         if tenant_id:
             return []
 
-        default_samples = [
+        default_samples: List[Dict[str, Any]] = [
             {
                 "bookingId": "BK-3985",
                 "vehicleId": "VH-1042",
@@ -108,37 +120,116 @@ class DashboardService:
 
         arrivals: List[UpcomingArrivalItem] = []
         for s in default_samples:
-            b_id = s["bookingId"]
+            b_id = str(s["bookingId"])
             is_arrived = b_id in self._arrived_ids
-            expected_at = now_ms + s["minutesFromNow"] * 60_000
+            expected_at = now_ms + float(s["minutesFromNow"]) * 60_000
             arrivals.append(
                 UpcomingArrivalItem(
                     bookingId=b_id,
-                    vehicleId=s["vehicleId"],
-                    customerId=s.get("customerId"),
-                    staffId=s.get("staffId"),
-                    pickupLocation=s["pickupLocation"],
-                    returnLocation=s["returnLocation"],
+                    vehicleId=str(s["vehicleId"]),
+                    customerId=str(s["customerId"]) if s.get("customerId") else None,
+                    staffId=str(s["staffId"]) if s.get("staffId") else None,
+                    pickupLocation=str(s["pickupLocation"]),
+                    returnLocation=str(s["returnLocation"]),
                     expectedAt=expected_at,
                     status="Arrived" if is_arrived else "Upcoming",
-                    vehicle=s.get("vehicle"),
-                    customer=s.get("customer"),
-                    staff=s.get("staff"),
+                    vehicle=s.get("vehicle") if isinstance(s.get("vehicle"), dict) else None,
+                    customer=s.get("customer") if isinstance(s.get("customer"), dict) else None,
+                    staff=s.get("staff") if isinstance(s.get("staff"), dict) else None,
                 )
             )
         return arrivals
 
-    def mark_arrived(self, booking_id: str) -> bool:
+    def mark_arrived(self, booking_id: str, tenant_id: Optional[str] = None) -> bool:
         self._arrived_ids.add(booking_id)
         db = self._get_db()
+        now_iso = datetime.now(timezone.utc).isoformat()
         if db is not None:
             try:
-                db["bookings"].update_one(
-                    {"$or": [{"id": booking_id}, {"bookingId": booking_id}]},
-                    {"$set": {"arrival_status": "Arrived", "status": "Completed"}},
-                )
-            except Exception:
-                pass
+                conds: list[dict[str, Any]] = [{"id": booking_id}, {"bookingId": booking_id}]
+                if ObjectId.is_valid(booking_id):
+                    conds.append({"_id": ObjectId(booking_id)})
+                else:
+                    conds.append({"_id": booking_id})
+
+                b_query: dict[str, Any] = {"$or": conds}
+                if tenant_id:
+                    b_query["$and"] = [
+                        {"$or": conds},
+                        {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]},
+                    ]
+                    b_query.pop("$or", None)
+
+                b = db["bookings"].find_one(b_query) or db["bookings"].find_one({"$or": conds})
+                if b:
+                    db["bookings"].update_one(
+                        {"_id": b["_id"]},
+                        {"$set": {"arrival_status": "Arrived", "status": "Completed", "updated_at": now_iso}},
+                    )
+                    # Vehicle associated with the completed rental transitions to 'Under Review' for mechanic inspection
+                    v_id = b.get("vehicle_id") or b.get("vehicle")
+                    v_details = b.get("vehicle_details") or {}
+                    v_details_id = v_details.get("id") if isinstance(v_details, dict) else None
+                    v_reg = v_details.get("registration") if isinstance(v_details, dict) else None
+
+                    v_conds: list[dict[str, Any]] = []
+                    for val in [v_id, v_details_id, b.get("vehicle"), b.get("registration")]:
+                        if val:
+                            s_val = str(val).strip()
+                            v_conds.extend([
+                                {"id": s_val},
+                                {"_id": s_val},
+                                {"name": s_val},
+                                {"makeModel": s_val},
+                                {"registration": s_val},
+                                {"registrationNumber": s_val},
+                            ])
+                            if ObjectId.is_valid(s_val):
+                                v_conds.append({"_id": ObjectId(s_val)})
+                    if v_reg:
+                        s_reg = str(v_reg).strip()
+                        v_conds.extend([
+                            {"registration": s_reg},
+                            {"registrationNumber": s_reg},
+                        ])
+                    if v_conds:
+                        db["vehicles"].update_many(
+                            {"$or": v_conds},
+                            {
+                                "$set": {
+                                    "fleetAvailability": "Under Review",
+                                    "availability": "Under Review",
+                                    "updatedAt": now_iso,
+                                    "updated_at": now_iso,
+                                }
+                            },
+                        )
+
+                    try:
+                        from app.modules.notifications.service import create_notification
+                        v_name = (
+                            (v_details.get("name") if isinstance(v_details, dict) else None)
+                            or b.get("vehicle")
+                            or "Vehicle"
+                        )
+                        create_notification(
+                            title="Vehicle Arrived · Under Review",
+                            message=f"Booking {booking_id} arrived. Vehicle {v_name} moved to Under Review for inspection.",
+                            notification_type="booking",
+                            severity="info",
+                            entity_id=booking_id,
+                            entity_type="booking",
+                            tenant_id=tenant_id,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    db["bookings"].update_one(
+                        {"$or": conds},
+                        {"$set": {"arrival_status": "Arrived", "status": "Completed", "updated_at": now_iso}},
+                    )
+            except Exception as exc:
+                logger.warning("Error in mark_arrived: %s", exc)
         return True
 
     def get_stats(

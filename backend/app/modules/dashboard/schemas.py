@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, ConfigDict
 
 
@@ -42,9 +42,9 @@ class UpcomingArrivalItem(BaseModel):
     returnLocation: str = ""
     expectedAt: float
     status: str = "Upcoming"
-    vehicle: Optional[dict] = None
-    customer: Optional[dict] = None
-    staff: Optional[dict] = None
+    vehicle: Optional[Dict[str, Any]] = None
+    customer: Optional[Dict[str, Any]] = None
+    staff: Optional[Dict[str, Any]] = None
 
 
 class DashboardStatsResponse(BaseModel):

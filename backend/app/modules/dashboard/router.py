@@ -38,5 +38,6 @@ def mark_vehicle_arrival(
     booking_id: str,
     vendor: Annotated[Optional[dict[str, Any]], Depends(get_optional_vendor)] = None,
 ) -> dict[str, Any]:
-    dashboard_service.mark_arrived(booking_id)
-    return {"booking_id": booking_id, "status": "Arrived", "success": True}
+    tenant_id = str(vendor["_id"]) if vendor and "_id" in vendor else None
+    dashboard_service.mark_arrived(booking_id, tenant_id=tenant_id)
+    return {"booking_id": booking_id, "status": "Arrived", "vehicle_status": "Under Review", "success": True}

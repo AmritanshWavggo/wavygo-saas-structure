@@ -11,6 +11,17 @@ export const dashboardService = {
     const qs = params.toString() ? `?${params.toString()}` : ''
     return apiFetch(`/dashboard/stats${qs}`, { method: 'GET' })
   },
+
+  /**
+   * Mark an upcoming vehicle arrival as arrived.
+   * This completes the booking and moves the rented bike into 'Under Review'.
+   * @param {string} bookingId
+   */
+  async markArrival(bookingId) {
+    return apiFetch(`/dashboard/arrivals/${encodeURIComponent(bookingId)}/arrive`, {
+      method: 'POST',
+    })
+  },
 }
 
 export default dashboardService

@@ -34,6 +34,7 @@ StaffRole = Literal[
 class StaffCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    id: str | None = None
     name: str = Field(min_length=1, max_length=120)
     role: StaffRole
     phone: str = Field(min_length=7, max_length=25)
@@ -307,3 +308,25 @@ def delete_staff_document(
 
     collection.update_one(query, {"$pull": {"documents": {"id": document_id}}})
     return {"detail": "Document deleted successfully.", "id": document_id}
+
+
+@router.delete("/{staff_id}", summary="Delete staff member")
+def delete_staff(
+    staff_id: str,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+    collection: Annotated[Collection, Depends(get_staff_collection)],
+) -> dict[str, Any]:
+    object_id = parse_staff_id(staff_id)
+    query = {"_id": object_id, "tenant_id": vendor["_id"]}
+    staff_member = collection.find_one(query)
+    if not staff_member:
+        raise HTTPException(status_code=404, detail="Staff member not found.")
+
+    staff_folder = DOCUMENTS_UPLOAD_DIR / staff_id
+    if staff_folder.exists():
+        import shutil
+        shutil.rmtree(staff_folder, ignore_errors=True)
+
+    if hasattr(collection, "delete_one"):
+        collection.delete_one(query)
+    return {"detail": "Staff member deleted successfully.", "id": staff_id}

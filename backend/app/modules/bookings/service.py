@@ -381,19 +381,34 @@ class BookingService:
         # When booking completes (bike returned), vehicle goes to 'Under Review' for mechanic inspection
         if payload.status == "Completed":
             v_id = booking.vehicle_details.get("id") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "id", None)
+            v_reg = booking.vehicle_details.get("registration") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "registration", None)
             v_ident = v_id or booking.vehicle
-            if v_ident and db is not None:
+            if (v_ident or v_reg) and db is not None:
                 try:
-                    conds: list[dict[str, Any]] = [{"id": v_ident}, {"_id": v_ident}, {"makeModel": v_ident}, {"name": v_ident}]
-                    try:
-                        if ObjectId.is_valid(v_ident):
-                            conds.append({"_id": ObjectId(v_ident)})
-                    except Exception:
-                        pass
-                    db["vehicles"].update_many(
-                        {"$or": conds},
-                        {"$set": {"fleetAvailability": "Under Review", "availability": "Under Review", "updatedAt": update_dict["updated_at"]}},
-                    )
+                    conds: list[dict[str, Any]] = []
+                    if v_ident:
+                        s_id = str(v_ident).strip()
+                        conds.extend([
+                            {"id": s_id},
+                            {"_id": s_id},
+                            {"makeModel": s_id},
+                            {"name": s_id},
+                            {"registration": s_id},
+                            {"registrationNumber": s_id},
+                        ])
+                        if ObjectId.is_valid(s_id):
+                            conds.append({"_id": ObjectId(s_id)})
+                    if v_reg:
+                        s_reg = str(v_reg).strip()
+                        conds.extend([
+                            {"registration": s_reg},
+                            {"registrationNumber": s_reg},
+                        ])
+                    if conds:
+                        db["vehicles"].update_many(
+                            {"$or": conds},
+                            {"$set": {"fleetAvailability": "Under Review", "availability": "Under Review", "updatedAt": update_dict["updated_at"]}},
+                        )
                 except Exception:
                     pass
             try:
@@ -412,7 +427,11 @@ class BookingService:
         # Update customer active count if booking ended
         if payload.status in ("Completed", "Cancelled") and db is not None:
             try:
-                c_id = booking.customer_details.id if booking.customer_details else None
+                c_id = (
+                    booking.customer_details.get("id")
+                    if isinstance(booking.customer_details, dict)
+                    else getattr(booking.customer_details, "id", None)
+                ) if booking.customer_details else None
                 c_cond: dict[str, Any] = {}
                 if c_id and ObjectId.is_valid(c_id):
                     c_cond["_id"] = ObjectId(c_id)
@@ -478,7 +497,11 @@ class BookingService:
         # Update customer paid and pending metrics in Mongo
         if db is not None:
             try:
-                c_id = booking.customer_details.id if booking.customer_details else None
+                c_id = (
+                    booking.customer_details.get("id")
+                    if isinstance(booking.customer_details, dict)
+                    else getattr(booking.customer_details, "id", None)
+                ) if booking.customer_details else None
                 c_cond: dict[str, Any] = {}
                 if c_id and ObjectId.is_valid(c_id):
                     c_cond["_id"] = ObjectId(c_id)

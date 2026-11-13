@@ -36,12 +36,22 @@ function formatArrivalCountdown(arrival, now) {
 }
 
 function Dashboard() {
-  const { bookings = [], vehicles = [], payments = [], customers = [], staff = [] } = useDemoData()
+  const {
+    bookings = [],
+    vehicles = [],
+    payments = [],
+    customers = [],
+    staff = [],
+    updateRecord,
+    syncVehicles,
+    syncOfflineBookings,
+  } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
   const [backendStats, setBackendStats] = useState(null)
   const [vendorProfile, setVendorProfile] = useState(null)
   const [arrivalFilter, setArrivalFilter] = useState('All Upcoming')
   const [arrivals, setArrivals] = useState([])
+  const [updatingArrivalId, setUpdatingArrivalId] = useState(null)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -75,6 +85,41 @@ function Dashboard() {
     const minutesUntilArrival = (arrival.expectedAt - now) / 60_000
     return minutesUntilArrival >= 0 && minutesUntilArrival <= arrivalWindow
   })
+
+  async function handleMarkArrived(arrival) {
+    if (!arrival?.bookingId) return
+    setUpdatingArrivalId(arrival.bookingId)
+    try {
+      // 1. Immediately update local UI state
+      setArrivals((current) =>
+        current.map((item) =>
+          item.bookingId === arrival.bookingId ? { ...item, status: 'Arrived' } : item,
+        ),
+      )
+
+      // 2. Immediately update in DemoDataContext (Booking -> Completed, Vehicle -> Under Review)
+      if (updateRecord) {
+        updateRecord('bookings', arrival.bookingId, { status: 'Completed', arrival_status: 'Arrived' })
+        const vId = arrival.vehicleId || arrival.vehicle?.id
+        if (vId) {
+          updateRecord('vehicles', vId, { availability: 'Under Review', fleetAvailability: 'Under Review' })
+        }
+      }
+
+      // 3. Inform backend API
+      await dashboardService.markArrival(arrival.bookingId)
+
+      // 4. Re-sync live data from backend
+      if (syncVehicles) await syncVehicles()
+      if (syncOfflineBookings) await syncOfflineBookings()
+      const stats = await dashboardService.getStats(dateRange)
+      if (stats) setBackendStats(stats)
+    } catch (err) {
+      console.warn('Backend mark arrival notice:', err)
+    } finally {
+      setUpdatingArrivalId(null)
+    }
+  }
 
   useEffect(() => {
     let active = true
@@ -414,12 +459,14 @@ function Dashboard() {
                       type="button"
                       variant={status === 'Arrived' ? 'secondary' : 'quiet'}
                       className="min-h-8 px-2.5 text-xs"
-                      disabled={status === 'Arrived'}
-                      onClick={() => setArrivals((current) => current.map((item) =>
-                        item.bookingId === arrival.bookingId ? { ...item, status: 'Arrived' } : item,
-                      ))}
+                      disabled={status === 'Arrived' || updatingArrivalId === arrival.bookingId}
+                      onClick={() => handleMarkArrived(arrival)}
                     >
-                      {status === 'Arrived' ? 'Arrived' : 'Mark as Arrived'}
+                      {status === 'Arrived'
+                        ? 'Arrived'
+                        : updatingArrivalId === arrival.bookingId
+                          ? 'Updating...'
+                          : 'Mark as Arrived'}
                     </Button>
                   </div>
                 </div>

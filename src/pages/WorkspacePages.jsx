@@ -534,12 +534,19 @@ function Payments() {
     }
   }
 
+  useEffect(() => {
+    syncPayments?.()
+    syncFinance?.()
+    syncOfflineBookings?.()
+  }, [])
+
   async function handleRefresh() {
     setIsSyncing(true)
     try {
       await Promise.allSettled([
         syncPayments ? syncPayments() : Promise.resolve(),
         syncFinance ? syncFinance() : Promise.resolve(),
+        syncOfflineBookings ? syncOfflineBookings() : Promise.resolve(),
       ])
     } finally {
       setIsSyncing(false)
@@ -1300,8 +1307,8 @@ function Payments() {
 }
 
 function Documents() {
-  const { documents, addRecord, syncDocuments, vehicles } = useDemoData()
-  const [tab, setTab] = useState('Business')
+  const { documents = [], addRecord, syncDocuments, vehicles = [] } = useDemoData()
+  const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
@@ -1316,7 +1323,47 @@ function Documents() {
   const [formNotes, setFormNotes] = useState('')
   const [selectedFile, setSelectedFile] = useState(null)
 
-  const filtered = documents.filter((document) => document.scope === tab)
+  // Aggregate all stored documents and documents attached to vehicles
+  const allDocuments = useMemo(() => {
+    const list = Array.isArray(documents) ? [...documents] : []
+    if (Array.isArray(vehicles)) {
+      vehicles.forEach((v) => {
+        if (Array.isArray(v.documents)) {
+          v.documents.forEach((vd, idx) => {
+            const url = typeof vd === 'string' ? vd : (vd.url || vd.file_url)
+            const docId = vd.id || vd.publicId || `${v.id}-doc-${idx}`
+            if (!list.some((existing) => existing.id === docId || (url && (existing.file_url === url || existing.url === url)))) {
+              list.push({
+                id: docId,
+                name: vd.name || `${v.name || 'Vehicle'} ${vd.type || 'Document'}`,
+                category: vd.type || 'Vehicle Document',
+                scope: 'Vehicle',
+                vehicle_id: v.id,
+                vehicle_name: v.name,
+                file_url: url,
+                url: url,
+                status: 'Verified',
+                date: v.createdAt ? new Date(v.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
+                backendSynced: true,
+              })
+            }
+          })
+        }
+      })
+    }
+    return list
+  }, [documents, vehicles])
+
+  const filtered = useMemo(() => {
+    return allDocuments.filter((doc) => {
+      if (tab === 'All') return true
+      return (doc.scope || 'Business').toLowerCase() === tab.toLowerCase()
+    })
+  }, [allDocuments, tab])
+
+  useEffect(() => {
+    syncDocuments?.()
+  }, [])
 
   async function handleRefresh() {
     setIsSyncing(true)
@@ -1412,13 +1459,13 @@ function Documents() {
       />
 
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
-        <MetricCard label="All documents" value={documents.length} icon={FileText} />
-        <MetricCard label="Verified" value={documents.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="green" />
-        <MetricCard label="Needs attention" value={documents.filter((item) => item.status !== 'Verified').length} icon={CalendarDays} tone="amber" />
+        <MetricCard label="All documents" value={allDocuments.length} icon={FileText} />
+        <MetricCard label="Verified" value={allDocuments.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="green" />
+        <MetricCard label="Needs attention" value={allDocuments.filter((item) => item.status !== 'Verified').length} icon={CalendarDays} tone="amber" />
       </div>
 
       <Card className="overflow-hidden">
-        <Tabs items={['Business', 'Vehicle']} value={tab} onChange={setTab} />
+        <Tabs items={['All', 'Business', 'Vehicle']} value={tab} onChange={setTab} />
         <div className="px-4 py-3 sm:px-5">
           <div className="flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs leading-5 text-sky-900">
             <span className="font-semibold text-sky-800">☁️ Cloudinary Storage:</span> Files are uploaded directly to Cloudinary CDN, and the secure URLs and metadata are stored in MongoDB.
@@ -1427,21 +1474,25 @@ function Documents() {
 
         <DataTable
           rows={filtered}
-          emptyTitle="No customers registered yet"
-          emptyText="Customers added through bookings or manually will appear here."
+          emptyTitle="No documents registered yet"
+          emptyText="Documents uploaded directly or attached to your vehicles will appear here."
           columns={[
             {
               key: 'name',
               label: 'Document',
               render: (row) => (
-                <span className="flex items-center gap-3">
-                  <span className="grid size-9 place-items-center rounded-lg bg-emerald-50 text-emerald-700">
+                <button
+                  type="button"
+                  onClick={() => setSelected(row)}
+                  className="group flex items-center gap-3 text-left transition hover:text-emerald-800"
+                >
+                  <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-50 text-emerald-700 group-hover:bg-emerald-100">
                     <FileText size={16} />
                   </span>
-                  <span className="font-medium text-slate-800">
+                  <span className="font-medium text-slate-800 group-hover:text-emerald-800">
                     <span className="flex items-center gap-1.5">
                       {row.name}
-                      {row.file_url && (
+                      {(row.file_url || row.url) && (
                         <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-600/20">
                           Cloudinary
                         </span>
@@ -1451,7 +1502,7 @@ function Documents() {
                       {row.id} {row.vehicle_name ? `· ${row.vehicle_name}` : ''}
                     </span>
                   </span>
-                </span>
+                </button>
               ),
             },
             { key: 'category', label: 'Category' },
@@ -1460,47 +1511,49 @@ function Documents() {
             {
               key: 'actions',
               label: '',
-              render: (row) => (
-                <div className="flex items-center gap-1">
-                  {row.file_url ? (
-                    <a
-                      href={row.file_url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-emerald-800"
+              render: (row) => {
+                const docUrl = row.file_url || row.url
+                return (
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="quiet"
+                      className="min-h-8 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
+                      onClick={() => setSelected(row)}
+                      title="View & preview document"
                     >
-                      <ExternalLink size={13} />
-                      Preview
-                    </a>
-                  ) : (
-                    <Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}>
-                      <Eye size={15} />
+                      <Eye size={14} className="mr-1" />
+                      View
                     </Button>
-                  )}
 
-                  {row.file_url && (
-                    <a
-                      href={row.file_url}
-                      download
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex h-8 items-center justify-center rounded-lg border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-                      title="Download document"
+                    {docUrl && (
+                      <a
+                        href={docUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-emerald-800"
+                        title="Open file in new tab"
+                      >
+                        <ExternalLink size={13} />
+                        Open
+                      </a>
+                    )}
+
+                    <Button
+                      variant="quiet"
+                      className="min-h-8 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                      onClick={() => handleDelete(row.id)}
+                      title="Delete document"
                     >
-                      <Download size={14} />
-                    </a>
-                  )}
-
-                  <Button variant="quiet" className="min-h-8 px-2 text-rose-600 hover:text-rose-700" onClick={() => handleDelete(row.id)} title="Delete document">
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              ),
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                )
+              },
             },
           ]}
         />
         <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
-          {filtered.length} {tab.toLowerCase()} documents stored
+          {filtered.length} {tab === 'All' ? 'total' : tab.toLowerCase()} documents stored
         </p>
       </Card>
 
@@ -1646,15 +1699,94 @@ function Documents() {
       )}
 
       {selected && (
-        <DetailDialog
-          title={selected.name}
-          record={selected}
+        <Modal
+          title={`Document: ${selected.name}`}
           onClose={() => setSelected(null)}
-          rows={Object.entries(selected).map(([key, value]) => [
-            key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
-            typeof value === 'object' ? JSON.stringify(value) : String(value || '—'),
-          ])}
-        />
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-slate-400">
+                {selected.id} · {selected.category} · {selected.scope}
+              </span>
+              <div className="flex items-center gap-2">
+                {(selected.file_url || selected.url) && (
+                  <a
+                    href={selected.file_url || selected.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-emerald-800"
+                  >
+                    <ExternalLink size={14} />
+                    Open in new tab
+                  </a>
+                )}
+                <Button type="button" onClick={() => setSelected(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            {/* Header badges */}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{selected.name}</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {selected.scope} {selected.vehicle_name ? `· Vehicle: ${selected.vehicle_name}` : ''}
+                </p>
+              </div>
+              <StatusBadge status={selected.status || 'Verified'} />
+            </div>
+
+            {/* In-app Document Preview */}
+            {(selected.file_url || selected.url) ? (
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                {String(selected.file_url || selected.url).toLowerCase().includes('.pdf') ? (
+                  <iframe
+                    src={selected.file_url || selected.url}
+                    title={selected.name}
+                    className="h-96 w-full border-0 bg-white"
+                  />
+                ) : (
+                  <div className="flex max-h-96 items-center justify-center p-2">
+                    <img
+                      src={selected.file_url || selected.url}
+                      alt={selected.name}
+                      className="max-h-80 max-w-full rounded-lg object-contain shadow-sm"
+                      onError={(e) => {
+                        e.target.style.display = 'none'
+                        if (e.target.parentNode) {
+                          e.target.parentNode.innerHTML =
+                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline image preview. Click "Open in new tab" above.</p>'
+                        }
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
+                No direct file link is attached to this record.
+              </div>
+            )}
+
+            {/* Details Table */}
+            <div className="space-y-2 border-t border-slate-100 pt-3">
+              {[
+                ['Category', selected.category],
+                ['Scope', selected.scope],
+                ['Associated Vehicle', selected.vehicle_name || selected.vehicle_id || 'None'],
+                ['Uploaded Date', selected.date || selected.created_at],
+                ['Remarks / Notes', selected.notes || 'No remarks provided'],
+              ].map(([lbl, val]) => (
+                <div key={lbl} className="flex items-start justify-between gap-4 text-xs">
+                  <span className="text-slate-500">{lbl}</span>
+                  <span className="font-medium text-slate-800">{val || '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   )
@@ -1666,6 +1798,23 @@ function Maintenance() {
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  useEffect(() => {
+    syncMaintenance?.()
+    syncVehicles?.()
+  }, [])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncMaintenance) await syncMaintenance()
+      if (syncVehicles) await syncVehicles()
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   const filtered = maintenance.filter((record) =>
     (tab === 'All' || record.status === tab)
     && `${record.vehicle} ${record.type} ${record.id}`.toLowerCase().includes(query.toLowerCase()),
@@ -1673,7 +1822,19 @@ function Maintenance() {
 
   return (
     <div>
-      <PageHeader title="Maintenance" description="Schedule service and keep track of fleet health and costs." action={<Button onClick={() => setShowForm(true)}><Plus size={16} />Add maintenance</Button>} />
+      <PageHeader
+        title="Maintenance"
+        description="Schedule service and keep track of fleet health and costs."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => setShowForm(true)}><Plus size={16} />Add maintenance</Button>
+          </div>
+        }
+      />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="Open jobs" value={maintenance.filter((item) => item.status === 'Ongoing').length} icon={Wrench} tone="blue" />
         <MetricCard label="Completed this month" value={maintenance.filter((item) => item.status === 'Completed').length} icon={Check} />
@@ -1682,7 +1843,11 @@ function Maintenance() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Ongoing', 'Completed']} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search vehicle or maintenance…" /></div>
-        <DataTable rows={filtered} columns={[
+        <DataTable
+          rows={filtered}
+          emptyTitle="No maintenance records found"
+          emptyText="Click 'Add maintenance' to schedule vehicle repairs or maintenance."
+          columns={[
           { key: 'vehicle', label: 'Vehicle', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.vehicle}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id} · {row.type}</span></button> },
           { key: 'start', label: 'Started' }, { key: 'expected', label: 'Expected completion' },
           { key: 'cost', label: 'Cost', render: (row) => currency(row.cost) },
@@ -1757,17 +1922,45 @@ function Maintenance() {
 }
 
 function Staff() {
-  const { staff = [], addRecord, updateRecord, syncStaff } = useDemoData()
+  const { staff = [], addRecord, updateRecord, deleteRecord, syncStaff } = useDemoData()
   const [tab, setTab] = useState('All')
   const [query, setQuery] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
   const [notice, setNotice] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
   const [documentsByStaff, setDocumentsByStaff] = useState({})
   const [documentTypes, setDocumentTypes] = useState({})
   const [documentErrors, setDocumentErrors] = useState({})
   const [previewDocument, setPreviewDocument] = useState(null)
   const [previewUrl, setPreviewUrl] = useState('')
+
+  useEffect(() => {
+    syncStaff?.()
+  }, [])
+
+  // Sync loaded documents from staff members
+  useEffect(() => {
+    const docMap = {}
+    staff.forEach((person) => {
+      if (Array.isArray(person.documents) && person.documents.length) {
+        docMap[person.id] = person.documents
+      }
+    })
+    setDocumentsByStaff((current) => ({
+      ...docMap,
+      ...current,
+    }))
+  }, [staff])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncStaff) await syncStaff()
+    } finally {
+      setIsSyncing(false)
+    }
+  }
 
   useEffect(() => {
     if (!previewDocument) {
@@ -1789,7 +1982,7 @@ function Staff() {
     && `${person.name || ''} ${person.role || ''} ${person.phone || ''}`.toLowerCase().includes(query.toLowerCase()),
   )
 
-  function uploadDocuments(person, event) {
+  async function uploadDocuments(person, event) {
     const files = Array.from(event.target.files || [])
     const acceptedFiles = files.filter((file) => /\.(pdf|jpe?g|png)$/i.test(file.name))
     const rejectedFiles = files.length - acceptedFiles.length
@@ -1805,32 +1998,37 @@ function Staff() {
 
     if (acceptedFiles.length) {
       const category = documentTypes[person.id] || 'ID Proof'
-      setDocumentsByStaff((current) => ({
-        ...current,
-        [person.id]: [
-          ...(current[person.id] || []),
-          ...acceptedFiles.map((file) => ({
-            id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-            name: file.name,
-            category,
-            file,
-          })),
-        ],
-      }))
-
-      acceptedFiles.forEach((file) => {
+      for (const file of acceptedFiles) {
         try {
-          const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : null
-          const formData = new FormData()
-          formData.append('file', file)
-          formData.append('category', category)
-          fetch(`${API_BASE_URL}/staff/${encodeURIComponent(person.id)}/documents`, {
-            method: 'POST',
-            headers: token ? { Authorization: `Bearer ${token}` } : {},
-            body: formData,
-          }).catch(() => {})
-        } catch (_) {}
-      })
+          const uploaded = await staffService.uploadStaffDocument(person.id, category, file)
+          setDocumentsByStaff((current) => ({
+            ...current,
+            [person.id]: [
+              ...(current[person.id] || []),
+              uploaded || {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name: file.name,
+                category,
+                file,
+              },
+            ],
+          }))
+        } catch (err) {
+          setDocumentsByStaff((current) => ({
+            ...current,
+            [person.id]: [
+              ...(current[person.id] || []),
+              {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name: file.name,
+                category,
+                file,
+              },
+            ],
+          }))
+        }
+      }
+      if (syncStaff) await syncStaff()
     }
 
     event.target.value = ''
@@ -1849,41 +2047,59 @@ function Staff() {
     }
   }
 
-  function deleteDocument(personId, documentId) {
+  async function deleteDocument(personId, documentId) {
     setDocumentsByStaff((current) => ({
       ...current,
       [personId]: (current[personId] || []).filter((item) => item.id !== documentId),
     }))
     if (previewDocument?.id === documentId) setPreviewDocument(null)
     try {
-      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : null
-      fetch(`${API_BASE_URL}/staff/${encodeURIComponent(personId)}/documents/${encodeURIComponent(documentId)}`, {
-        method: 'DELETE',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      }).catch(() => {})
+      await staffService.deleteStaffDocument(personId, documentId)
+      if (syncStaff) await syncStaff()
     } catch (_) {}
   }
 
-  function toggleStaffStatus(person) {
+  async function toggleStaffStatus(person) {
     const nextStatus = person.status === 'Active' ? 'Inactive' : 'Active'
     updateRecord('staff', person.id, { status: nextStatus })
     setNotice(`${person.name} is now ${nextStatus.toLowerCase()}.`)
     try {
-      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : null
-      fetch(`${API_BASE_URL}/staff/${encodeURIComponent(person.id)}/status`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ status: nextStatus }),
-      }).catch(() => {})
+      await staffService.updateStaffStatus(person.id, nextStatus)
+      if (syncStaff) await syncStaff()
     } catch (_) {}
+  }
+
+  async function handleDeleteStaff(person) {
+    if (!window.confirm(`Are you sure you want to remove ${person.name} from your team?`)) return
+    try {
+      await staffService.deleteStaff(person.id)
+      if (deleteRecord) deleteRecord('staff', person.id)
+      if (syncStaff) await syncStaff()
+      setNotice(`${person.name} removed successfully.`)
+    } catch (err) {
+      if (deleteRecord) deleteRecord('staff', person.id)
+      setNotice(`${person.name} removed locally.`)
+    }
   }
 
   return (
     <div>
-      <PageHeader title="Staff" description="Manage your team, roles, attendance and payroll overview." action={<Button onClick={() => { setNotice(''); setShowForm(true) }}><Plus size={16} />Add staff</Button>} />
+      <PageHeader
+        title="Staff"
+        description="Manage your team, roles, attendance and payroll overview."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => { setNotice(''); setShowForm(true) }}>
+              <Plus size={16} />
+              Add staff
+            </Button>
+          </div>
+        }
+      />
       {notice && <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">{notice}</div>}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="Team members" value={staff.length} caption="Saved in your workspace" icon={Users} />
@@ -1893,7 +2109,11 @@ function Staff() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Active', 'Inactive']} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search team members…" /></div>
-        <DataTable rows={filtered} columns={[
+        <DataTable
+          rows={filtered}
+          emptyTitle="No team members added yet"
+          emptyText="Click 'Add staff' to register team members and fleet managers."
+          columns={[
           { key: 'name', label: 'Team member', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></button> },
           { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
           { key: 'documents', label: 'Documents', render: (row) => {
@@ -1951,41 +2171,70 @@ function Staff() {
           { key: 'attendance', label: 'Attendance', render: (row) => row.attendance || 'Not recorded' },
           { key: 'nextSalary', label: 'Next salary', render: (row) => row.nextSalary || '—' },
           { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'action', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>{row.status === 'Active' ? 'Deactivate' : 'Activate'}</Button> },
+          { key: 'action', label: '', render: (row) => (
+            <div className="flex items-center gap-1.5">
+              <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>
+                {row.status === 'Active' ? 'Deactivate' : 'Activate'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => handleDeleteStaff(row)}
+                title="Remove staff member"
+                aria-label={`Remove ${row.name}`}
+                className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          )},
         ]} />
         <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{`${filtered.length} staff member${filtered.length === 1 ? '' : 's'} shown`}</p>
       </Card>
-      {showForm && <RecordForm title="Add team member" onClose={() => setShowForm(false)} fields={[
-        { name: 'name', label: 'Full name', required: true },
-        { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
-        { name: 'phone', label: 'Phone number', type: 'tel', required: true },
-        { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
-        { name: 'nextSalary', label: 'Next salary date', type: 'date' },
-      ]} onSave={(values) => {
-        const newRecord = {
-          ...values,
-          salary: Number(values.salary),
-          id: nextId('ST', staff),
-          attendance: 'Not recorded',
-          status: 'Active',
-        }
-        addRecord('staff', newRecord)
-        setShowForm(false)
-        setNotice('Staff member added successfully.')
-        try {
-          const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : null
-          fetch(`${API_BASE_URL}/staff/`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(token ? { Authorization: `Bearer ${token}` } : {}),
-            },
-            body: JSON.stringify(newRecord),
-          })
-            .then(() => syncStaff?.())
-            .catch(() => {})
-        } catch (_) {}
-      }} showDemoNote={false} />}
+      {showForm && (
+        <RecordForm
+          title="Add team member"
+          onClose={() => setShowForm(false)}
+          fields={[
+            { name: 'name', label: 'Full name', required: true },
+            { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
+            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
+            { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
+            { name: 'nextSalary', label: 'Next salary date', type: 'date' },
+          ]}
+          onSave={async (values) => {
+            const payload = {
+              name: values.name.trim(),
+              role: values.role,
+              phone: values.phone.trim(),
+              salary: Number(values.salary),
+              attendance: '26 / 26 days',
+              nextSalary: values.nextSalary || '',
+              status: 'Active',
+            }
+            try {
+              const res = await staffService.createStaff(payload)
+              if (syncStaff) await syncStaff()
+              else {
+                addRecord('staff', {
+                  ...payload,
+                  id: res?.id || nextId('ST', staff),
+                  backendSynced: true,
+                })
+              }
+              setNotice('Staff member added successfully.')
+            } catch (err) {
+              addRecord('staff', {
+                ...payload,
+                id: nextId('ST', staff),
+                backendSynced: false,
+              })
+              setNotice('Staff member added locally.')
+            }
+            setShowForm(false)
+          }}
+          showDemoNote={false}
+        />
+      )}
       {selected && <DetailDialog title={selected.name} onClose={() => setSelected(null)} showDemoNote={false} rows={[
         ['Staff ID', selected.id], ['Full name', selected.name], ['Role', selected.role],
         ['Phone', selected.phone], ['Monthly salary', currency(selected.salary)],
