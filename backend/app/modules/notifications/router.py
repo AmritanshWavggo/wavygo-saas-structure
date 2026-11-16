@@ -83,6 +83,8 @@ def mark_all_read(
 @router.delete("/{notification_id}", summary="Delete notification")
 def delete_notification(
     notification_id: str,
+    vendor: Annotated[Optional[dict[str, Any]], Depends(get_optional_vendor)] = None,
 ) -> dict[str, Any]:
-    success = service.delete_notification(notification_id)
+    tenant_id = str(vendor["_id"]) if vendor else None
+    success = service.delete_notification(notification_id, tenant_id=tenant_id)
     return {"success": success, "id": notification_id}

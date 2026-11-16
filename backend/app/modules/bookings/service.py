@@ -254,6 +254,7 @@ class BookingService:
 
         try:
             from app.modules.notifications.service import create_notification
+            b_tenant = tenant_id or getattr(payload, "tenant_id", None)
             create_notification(
                 title="Vehicle Rented (New Booking)",
                 message=f"{payload.vehicle.vehicle_name} is now Rented for booking {booking_id} by {payload.customer.name}.",
@@ -261,6 +262,7 @@ class BookingService:
                 severity="success",
                 entity_id=booking_id,
                 entity_type="booking",
+                tenant_id=str(b_tenant) if b_tenant else None,
             )
         except Exception:
             pass
@@ -413,6 +415,7 @@ class BookingService:
                     pass
             try:
                 from app.modules.notifications.service import create_notification
+                b_tenant = tenant_id or getattr(booking, "tenant_id", None) or getattr(booking, "vendor_id", None)
                 create_notification(
                     title="Rental Completed",
                     message=f"Booking {booking_id} completed. Vehicle {booking.vehicle} moved to Under Review for inspection.",
@@ -420,6 +423,7 @@ class BookingService:
                     severity="info",
                     entity_id=booking_id,
                     entity_type="booking",
+                    tenant_id=str(b_tenant) if b_tenant else None,
                 )
             except Exception:
                 pass
@@ -530,6 +534,7 @@ class BookingService:
 
         try:
             from app.modules.notifications.service import create_notification
+            b_tenant = tenant_id or getattr(booking, "tenant_id", None) or getattr(booking, "vendor_id", None)
             create_notification(
                 title="Payment Received",
                 message=f"Payment of ₹{payment.amount} recorded for booking {booking_id} via {payment.method}.",
@@ -537,6 +542,7 @@ class BookingService:
                 severity="success",
                 entity_id=booking_id,
                 entity_type="booking",
+                tenant_id=str(b_tenant) if b_tenant else None,
             )
         except Exception:
             pass

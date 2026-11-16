@@ -207,7 +207,17 @@ function Dashboard() {
       ? backendStats.rented_vehicles_list
       : rentedVehicles
 
-  const partnerGreeting = vendorProfile?.businessName || vendorProfile?.ownerName || 'Partner'
+  const storedBusiness = localStorage.getItem('wavygo-business-name') || ''
+  const storedOwner = localStorage.getItem('wavygo-owner-name') || ''
+  const userEmail = sessionStorage.getItem('wavygo-user-email') || ''
+  const emailName = userEmail ? userEmail.split('@')[0] : ''
+  const partnerGreeting =
+    vendorProfile?.businessName ||
+    vendorProfile?.ownerName ||
+    storedBusiness ||
+    storedOwner ||
+    emailName ||
+    'there'
 
   return (
     <div>

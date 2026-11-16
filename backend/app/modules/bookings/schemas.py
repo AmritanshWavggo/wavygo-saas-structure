@@ -42,6 +42,7 @@ class OfflineBookingCreate(BaseModel):
     rental: RentalInput
     payment: PaymentInput
     notes: Optional[str] = Field(None, description="Optional notes/remarks from counter staff")
+    tenant_id: Optional[str] = Field(None, description="Optional tenant/vendor ID")
 
 
 class OfflineBookingUpdate(BaseModel):

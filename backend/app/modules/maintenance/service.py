@@ -190,6 +190,7 @@ class MaintenanceService:
                 severity="warning",
                 entity_id=m_id,
                 entity_type="maintenance",
+                tenant_id=str(tenant_id) if tenant_id else None,
             )
         except Exception:
             pass
@@ -317,6 +318,7 @@ class MaintenanceService:
                 self._update_vehicle_availability_internal(existing.vehicle_id or existing.vehicle, "Available")
                 try:
                     from app.modules.notifications.service import create_notification
+                    m_tenant = tenant_id or getattr(existing, "tenant_id", None) or getattr(existing, "vendor_id", None)
                     create_notification(
                         title="Maintenance Completed",
                         message=f"{existing.vehicle} repairs completed. Vehicle is now Available.",
@@ -324,6 +326,7 @@ class MaintenanceService:
                         severity="success",
                         entity_id=maintenance_id,
                         entity_type="vehicle",
+                        tenant_id=str(m_tenant) if m_tenant else None,
                     )
                 except Exception:
                     pass

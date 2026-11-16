@@ -40,6 +40,7 @@ def create_notification(
         return None
 
     now = datetime.now(timezone.utc)
+    t_id = str(tenant_id).strip() if tenant_id else None
     doc = {
         "_id": ObjectId(),
         "title": title.strip(),
@@ -48,7 +49,8 @@ def create_notification(
         "severity": severity.strip().lower(),
         "entity_id": str(entity_id) if entity_id else None,
         "entity_type": entity_type.strip().lower() if entity_type else None,
-        "tenant_id": str(tenant_id) if tenant_id else None,
+        "tenant_id": t_id,
+        "vendor_id": t_id,
         "is_read": False,
         "created_at": now,
         "updated_at": now,
@@ -75,7 +77,9 @@ def list_notifications(
 
     query: dict[str, Any] = {}
     if tenant_id:
-        query["$or"] = [{"tenant_id": str(tenant_id)}, {"tenant_id": None}, {"tenant_id": {"$exists": False}}]
+        query["$or"] = [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]
+    else:
+        query["tenant_id"] = "__unauthenticated_none__"
 
     if unread_only:
         query["is_read"] = False
@@ -103,6 +107,9 @@ def mark_notification_as_read(notification_id: str, tenant_id: Optional[str] = N
     except Exception:
         query["id"] = notification_id
 
+    if tenant_id:
+        query["$or"] = [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]
+
     now = datetime.now(timezone.utc)
     try:
         res = db["notifications"].update_one(query, {"$set": {"is_read": True, "updated_at": now}})
@@ -120,7 +127,9 @@ def mark_all_notifications_as_read(tenant_id: Optional[str] = None) -> int:
 
     query: dict[str, Any] = {"is_read": False}
     if tenant_id:
-        query["$or"] = [{"tenant_id": str(tenant_id)}, {"tenant_id": None}, {"tenant_id": {"$exists": False}}]
+        query["$or"] = [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]
+    else:
+        query["tenant_id"] = "__unauthenticated_none__"
 
     now = datetime.now(timezone.utc)
     try:
@@ -139,7 +148,9 @@ def get_unread_count(tenant_id: Optional[str] = None) -> int:
 
     query: dict[str, Any] = {"is_read": False}
     if tenant_id:
-        query["$or"] = [{"tenant_id": str(tenant_id)}, {"tenant_id": None}, {"tenant_id": {"$exists": False}}]
+        query["$or"] = [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]
+    else:
+        query["tenant_id"] = "__unauthenticated_none__"
 
     try:
         return db["notifications"].count_documents(query)
@@ -148,7 +159,7 @@ def get_unread_count(tenant_id: Optional[str] = None) -> int:
         return 0
 
 
-def delete_notification(notification_id: str) -> bool:
+def delete_notification(notification_id: str, tenant_id: Optional[str] = None) -> bool:
     """Delete a notification permanently."""
     db = _get_db()
     if db is None:
@@ -159,6 +170,9 @@ def delete_notification(notification_id: str) -> bool:
         query["_id"] = ObjectId(notification_id)
     except Exception:
         query["id"] = notification_id
+
+    if tenant_id:
+        query["$or"] = [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]
 
     try:
         res = db["notifications"].delete_one(query)

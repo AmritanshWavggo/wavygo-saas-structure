@@ -642,7 +642,7 @@ def create_vehicle(
             severity="success",
             entity_id=doc["id"],
             entity_type="vehicle",
-            tenant_id=getattr(tenant, "tenant_id", None),
+            tenant_id=_extract_tenant_id(tenant),
         )
     except Exception:
         pass
@@ -1053,7 +1053,7 @@ def update_vehicle(
                 severity="info" if new_avail == "Available" else "warning",
                 entity_id=str(vehicle_id),
                 entity_type="vehicle",
-                tenant_id=existing.get("tenant_id"),
+                tenant_id=_extract_tenant_id(tenant) or existing.get("tenant_id") or existing.get("tenantId") or existing.get("vendor_id"),
             )
         elif new_status and new_status != prev_status:
             create_notification(
@@ -1063,7 +1063,7 @@ def update_vehicle(
                 severity="info",
                 entity_id=str(vehicle_id),
                 entity_type="vehicle",
-                tenant_id=existing.get("tenant_id"),
+                tenant_id=_extract_tenant_id(tenant) or existing.get("tenant_id") or existing.get("tenantId") or existing.get("vendor_id"),
             )
     except Exception:
         pass
@@ -1126,7 +1126,7 @@ def toggle_show_on_wavygo(
             severity="info",
             entity_id=str(vehicle_id),
             entity_type="vehicle",
-            tenant_id=existing.get("tenant_id"),
+            tenant_id=_extract_tenant_id(tenant) or existing.get("tenant_id") or existing.get("tenantId") or existing.get("vendor_id"),
         )
     except Exception:
         pass
@@ -1198,7 +1198,7 @@ def delete_vehicle(
             severity="warning",
             entity_id=str(vehicle_id),
             entity_type="vehicle",
-            tenant_id=existing.get("tenant_id"),
+            tenant_id=_extract_tenant_id(tenant) or existing.get("tenant_id") or existing.get("tenantId") or existing.get("vendor_id"),
         )
     except Exception:
         pass

@@ -49,8 +49,24 @@ function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile }) {
     }
   }, [])
 
-  const businessName = profile?.businessName || 'Vendor Workspace'
-  const ownerName = profile?.ownerName || profile?.businessName || 'Vendor Partner'
+  const storedBusiness = localStorage.getItem('wavygo-business-name') || ''
+  const storedOwner = localStorage.getItem('wavygo-owner-name') || ''
+  const userEmail = sessionStorage.getItem('wavygo-user-email') || ''
+  const emailName = userEmail ? userEmail.split('@')[0] : ''
+
+  const businessName =
+    profile?.businessName ||
+    profile?.business_name ||
+    storedBusiness ||
+    (emailName ? `${emailName}'s Fleet` : 'Fleet Workspace')
+  const ownerName =
+    profile?.ownerName ||
+    profile?.owner_name ||
+    storedOwner ||
+    profile?.businessName ||
+    storedBusiness ||
+    emailName ||
+    'Vendor'
   const initials = businessName
     .split(' ')
     .filter(Boolean)
@@ -144,7 +160,7 @@ function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile }) {
             {!collapsed && (
               <div className="min-w-0">
                 <p className="truncate text-xs font-medium text-white/90">{ownerName}</p>
-                <p className="mt-0.5 text-[10px] text-emerald-100/50">{profile?.plan ? `${profile.plan} Partner` : 'Active Hub'}</p>
+                <p className="mt-0.5 text-[10px] text-emerald-100/50">{profile?.plan ? `${profile.plan} Plan` : 'Active Hub'}</p>
               </div>
             )}
           </div>

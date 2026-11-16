@@ -18,6 +18,8 @@ export const authService = {
       localStorage.setItem('access_token', data.access_token)
       sessionStorage.setItem('wavygo-demo-access', 'enabled')
       sessionStorage.setItem('wavygo-user-email', email.trim().toLowerCase())
+      if (data.business_name) localStorage.setItem('wavygo-business-name', data.business_name)
+      if (data.owner_name) localStorage.setItem('wavygo-owner-name', data.owner_name)
     }
     return data
   },
@@ -56,12 +58,16 @@ export const authService = {
       localStorage.setItem('access_token', data.access_token)
       sessionStorage.setItem('wavygo-demo-access', 'enabled')
       sessionStorage.setItem('wavygo-user-email', email.trim().toLowerCase())
+      if (data.business_name) localStorage.setItem('wavygo-business-name', data.business_name)
+      if (data.owner_name) localStorage.setItem('wavygo-owner-name', data.owner_name)
     }
     return data
   },
 
   logout() {
     localStorage.removeItem('access_token')
+    localStorage.removeItem('wavygo-business-name')
+    localStorage.removeItem('wavygo-owner-name')
     sessionStorage.removeItem('wavygo-demo-access')
     sessionStorage.removeItem('wavygo-user-email')
   },

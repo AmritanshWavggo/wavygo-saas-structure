@@ -77,14 +77,30 @@ function Topbar({ onOpenMobileSidebar }) {
     }
   }, [])
 
-  const businessName = profile?.businessName || profile?.ownerName || 'Vendor Partner'
-  const ownerName = profile?.ownerName || 'Active Hub'
-  const partnerInitials = (profile?.businessName || profile?.ownerName || 'VP')
+  const storedBusiness = localStorage.getItem('wavygo-business-name') || ''
+  const storedOwner = localStorage.getItem('wavygo-owner-name') || ''
+  const userEmail = sessionStorage.getItem('wavygo-user-email') || ''
+  const emailName = userEmail ? userEmail.split('@')[0] : ''
+
+  const businessName =
+    profile?.businessName ||
+    profile?.business_name ||
+    storedBusiness ||
+    (emailName ? `${emailName}'s Fleet` : 'Fleet Workspace')
+  const ownerName =
+    profile?.ownerName ||
+    profile?.owner_name ||
+    storedOwner ||
+    profile?.businessName ||
+    storedBusiness ||
+    emailName ||
+    'Vendor'
+  const partnerInitials = (businessName || ownerName || 'WG')
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
     .map((w) => w[0]?.toUpperCase())
-    .join('') || 'VP'
+    .join('') || 'WG'
 
   const {
     notifications = [],

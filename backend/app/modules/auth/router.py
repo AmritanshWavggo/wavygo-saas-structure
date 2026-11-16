@@ -61,6 +61,8 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
+    business_name: str | None = None
+    owner_name: str | None = None
 
 
 class SendOtpRequest(BaseModel):
@@ -258,6 +260,8 @@ def login(
         return TokenResponse(
             access_token=token,
             expires_in=expires_in,
+            business_name=vendor.get("business_name") or vendor.get("businessName"),
+            owner_name=vendor.get("owner_name") or vendor.get("ownerName") or vendor.get("owner"),
         )
 
     # Check previous session and device
@@ -332,8 +336,9 @@ def login(
     return TokenResponse(
         access_token=token,
         expires_in=expires_in,
+        business_name=vendor.get("business_name") or vendor.get("businessName"),
+        owner_name=vendor.get("owner_name") or vendor.get("ownerName") or vendor.get("owner"),
     )
-
 
 @router.post("/signup/send-otp")
 def send_signup_otp(
@@ -506,4 +511,6 @@ def signup(
     return TokenResponse(
         access_token=token,
         expires_in=expires_in,
+        business_name=payload.business_name,
+        owner_name=payload.owner_name or payload.business_name,
     )
