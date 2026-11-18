@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 import logging
 import time
 
@@ -36,7 +36,7 @@ def create_mongo_client() -> Optional[MongoClient]:
 
     try:
         import certifi
-        client_kwargs = {
+        client_kwargs: dict[str, Any] = {
             "serverSelectionTimeoutMS": 2000,
             "connectTimeoutMS": 2000,
         }
