@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   ArrowUpRight,
   Bike,
@@ -13,6 +13,8 @@ import {
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useDemoData } from '../../data/DemoDataContext.jsx'
+import { dashboardService } from '../../services/dashboardService.js'
+import { tenantService } from '../../services/tenantService.js'
 import {
   BarChart,
   Button,
@@ -22,32 +24,6 @@ import {
   PageHeader,
   StatusBadge,
 } from '../../components/ui/Workspace.jsx'
-
-const revenueTrend = [
-  { label: 'May', value: 18600 },
-  { label: 'Jun', value: 22900 },
-  { label: 'Jul', value: 21300 },
-  { label: 'Aug', value: 28600 },
-  { label: 'Sep', value: 31700 },
-  { label: 'Oct', value: 35400 },
-]
-
-function createSampleArrivals(vehicles, customers, staff) {
-  const samples = [
-    { bookingId: 'BK-3985', vehicleId: 'VH-1042', customerId: 'CU-2048', staffId: 'ST-024', minutesFromNow: 35, pickupLocation: 'WavyGo Ahmedabad Hub', returnLocation: 'Ahmedabad Airport' },
-    { bookingId: 'BK-3986', vehicleId: 'VH-1038', customerId: 'CU-2047', staffId: 'ST-023', minutesFromNow: 95, pickupLocation: 'Satellite Road Hub', returnLocation: 'Prahlad Nagar' },
-    { bookingId: 'BK-3987', vehicleId: 'VH-1034', customerId: 'CU-2046', staffId: 'ST-022', minutesFromNow: 180, pickupLocation: 'Navrangpura Hub', returnLocation: 'Ahmedabad Railway Station' },
-  ]
-
-  return samples.map((sample) => ({
-    ...sample,
-    vehicle: vehicles.find((vehicle) => vehicle.id === sample.vehicleId),
-    customer: customers.find((customer) => customer.id === sample.customerId),
-    staff: staff.find((person) => person.id === sample.staffId),
-    expectedAt: Date.now() + sample.minutesFromNow * 60_000,
-    status: 'Upcoming',
-  }))
-}
 
 function formatArrivalCountdown(arrival, now) {
   if (arrival.status === 'Arrived') return 'Marked as arrived'
@@ -60,20 +36,47 @@ function formatArrivalCountdown(arrival, now) {
 }
 
 function Dashboard() {
-  const { bookings, vehicles, customers, staff } = useDemoData()
+  const {
+    bookings = [],
+    vehicles = [],
+    payments = [],
+    customers = [],
+    staff = [],
+    updateRecord,
+    syncVehicles,
+    syncOfflineBookings,
+  } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
+  const [backendStats, setBackendStats] = useState(null)
+  const [vendorProfile, setVendorProfile] = useState(null)
   const [arrivalFilter, setArrivalFilter] = useState('All Upcoming')
-  const [arrivals, setArrivals] = useState(() => createSampleArrivals(vehicles, customers, staff))
+  const [arrivals, setArrivals] = useState([])
+  const [updatingArrivalId, setUpdatingArrivalId] = useState(null)
   const [now, setNow] = useState(() => Date.now())
-  const rentedVehicles = vehicles.filter((vehicle) => vehicle.availability === 'Rented')
-  const availableVehicles = vehicles.filter((vehicle) => vehicle.availability === 'Available')
-  const activeBookings = bookings.filter((booking) => booking.status === 'Active')
-  const monthlyRevenue = revenueTrend[revenueTrend.length - 1].value
+
+  useEffect(() => {
+    let active = true
+    tenantService
+      .getCurrentTenant()
+      .then((profile) => {
+        if (active && profile) setVendorProfile(profile)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 15_000)
     return () => window.clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (backendStats?.upcoming_arrivals && Array.isArray(backendStats.upcoming_arrivals)) {
+      setArrivals(backendStats.upcoming_arrivals)
+    }
+  }, [backendStats])
 
   const arrivalWindow = arrivalFilter === 'Next 1 Hour' ? 60 : arrivalFilter === 'Next 2 Hours' ? 120 : null
   const visibleArrivals = arrivals.filter((arrival) => {
@@ -83,15 +86,152 @@ function Dashboard() {
     return minutesUntilArrival >= 0 && minutesUntilArrival <= arrivalWindow
   })
 
+  async function handleMarkArrived(arrival) {
+    if (!arrival?.bookingId) return
+    setUpdatingArrivalId(arrival.bookingId)
+    try {
+      // 1. Immediately update local UI state
+      setArrivals((current) =>
+        current.map((item) =>
+          item.bookingId === arrival.bookingId ? { ...item, status: 'Arrived' } : item,
+        ),
+      )
+
+      // 2. Immediately update in DemoDataContext (Booking -> Completed, Vehicle -> Under Review)
+      if (updateRecord) {
+        updateRecord('bookings', arrival.bookingId, { status: 'Completed', arrival_status: 'Arrived' })
+        const vId = arrival.vehicleId || arrival.vehicle?.id
+        if (vId) {
+          updateRecord('vehicles', vId, { availability: 'Under Review', fleetAvailability: 'Under Review' })
+        }
+      }
+
+      // 3. Inform backend API
+      await dashboardService.markArrival(arrival.bookingId)
+
+      // 4. Re-sync live data from backend
+      if (syncVehicles) await syncVehicles()
+      if (syncOfflineBookings) await syncOfflineBookings()
+      const stats = await dashboardService.getStats(dateRange)
+      if (stats) setBackendStats(stats)
+    } catch (err) {
+      console.warn('Backend mark arrival notice:', err)
+    } finally {
+      setUpdatingArrivalId(null)
+    }
+  }
+
+  useEffect(() => {
+    let active = true
+    async function loadStats() {
+      try {
+        const stats = await dashboardService.getStats(dateRange)
+        if (active && stats) {
+          setBackendStats(stats)
+        }
+      } catch (err) {
+        console.warn('Dashboard backend sync notice:', err)
+      }
+    }
+    loadStats()
+    return () => {
+      active = false
+    }
+  }, [dateRange, bookings.length, vehicles.length, payments.length])
+
+  const rentedVehicles = vehicles.filter((v) => v.availability === 'Rented')
+  const availableVehicles = vehicles.filter((v) => v.availability === 'Available')
+  const activeBookings = bookings.filter((b) => b.status === 'Active')
+
+  // Calculations with live backend prioritization
+  const totalPaidRevenue =
+    backendStats?.total_revenue ??
+    (bookings.reduce((sum, b) => sum + (Number(b.paid) || 0), 0) ||
+      payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0))
+
+  const pendingPayments =
+    backendStats?.pending_payments ??
+    bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+
+  const fleetUtilization =
+    backendStats?.fleet_utilization ??
+    (vehicles.length > 0 ? Math.round((rentedVehicles.length / vehicles.length) * 100) : 0)
+
+  const totalVehiclesCount = backendStats?.total_vehicles ?? vehicles.length
+  const availableVehiclesCount = backendStats?.available_vehicles ?? availableVehicles.length
+  const activeBookingsCount = backendStats?.active_bookings ?? activeBookings.length
+
+  const todayDate = new Date().toLocaleDateString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).toUpperCase()
+
+  // Dynamic monthly trend data computed from backend or real payments
+  const revenueTrend = useMemo(() => {
+    if (Array.isArray(backendStats?.revenue_trend) && backendStats.revenue_trend.length > 0) {
+      return backendStats.revenue_trend
+    }
+    const now = new Date()
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const last6 = []
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      last6.push({
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        label: monthNames[d.getMonth()],
+        value: 0,
+      })
+    }
+    payments.forEach((p) => {
+      const amt = Number(p.amount) || 0
+      if (!amt) return
+      const pDate = p.date ? new Date(p.date) : null
+      if (pDate && !isNaN(pDate.getTime())) {
+        const match = last6.find((m) => m.year === pDate.getFullYear() && m.month === pDate.getMonth())
+        if (match) match.value += amt
+      }
+    })
+    const totalAgg = last6.reduce((s, m) => s + m.value, 0)
+    if (totalAgg === 0 && totalPaidRevenue > 0) {
+      last6[last6.length - 1].value = totalPaidRevenue
+    }
+    return last6.map(({ label, value }) => ({ label, value: Math.round(value) }))
+  }, [backendStats?.revenue_trend, payments, totalPaidRevenue])
+
+  const recentBookingsList = backendStats?.recent_bookings || bookings.slice(0, 4)
+  const rentedDisplayList =
+    backendStats?.rented_vehicles_list?.length > 0
+      ? backendStats.rented_vehicles_list
+      : rentedVehicles
+
+  const storedBusiness = localStorage.getItem('wavygo-business-name') || ''
+  const storedOwner = localStorage.getItem('wavygo-owner-name') || ''
+  const userEmail = sessionStorage.getItem('wavygo-user-email') || ''
+  const emailName = userEmail ? userEmail.split('@')[0] : ''
+  const partnerGreeting =
+    vendorProfile?.businessName ||
+    vendorProfile?.ownerName ||
+    storedBusiness ||
+    storedOwner ||
+    emailName ||
+    'there'
+
   return (
     <div>
       <PageHeader
-        eyebrow="MONDAY, OCTOBER 12, 2026"
-        title="Good morning, WavyGo"
-        description="Here's what's happening across your rental business today."
+        eyebrow={todayDate}
+        title={`Good day, ${partnerGreeting}`}
+        description="Here is what is happening across your rental fleet and bookings today."
         action={
           <div className="flex flex-wrap gap-2">
-            <FilterSelect value={dateRange} onChange={setDateRange} options={['Last 7 days', 'Last 30 days', 'This month', 'Last 90 days']} />
+            <FilterSelect
+              value={dateRange}
+              onChange={setDateRange}
+              options={['Last 7 days', 'Last 30 days', 'This month', 'Last 90 days']}
+            />
             <Link to="/app/bookings/new">
               <Button>
                 <Plus size={16} aria-hidden="true" />
@@ -102,18 +242,35 @@ function Dashboard() {
         }
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200/80 bg-amber-50/70 px-4 py-2.5 text-xs text-amber-800">
-        <span className="rounded-full bg-amber-100 px-2 py-0.5 font-semibold uppercase tracking-wide text-[10px]">
-          Demo workspace
-        </span>
-        Illustrative figures and sample records only — no live business data or API is connected.
-      </div>
-
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-4 sm:gap-4">
-        <MetricCard label="Total vehicles" value={vehicles.length} caption="Demo fleet" icon={Bike} tone="navy" />
-        <MetricCard label="Available vehicles" value={availableVehicles.length} caption="Ready for a booking" icon={Check} tone="green" />
-        <MetricCard label="Active bookings" value={activeBookings.length} caption="Sample active rentals" icon={CalendarDays} tone="blue" />
-        <MetricCard label="Revenue" value={`₹${monthlyRevenue.toLocaleString('en-IN')}`} caption="Illustrative October revenue" icon={CircleDollarSign} tone="violet" />
+        <MetricCard
+          label="Total vehicles"
+          value={totalVehiclesCount}
+          caption="Total fleet size"
+          icon={Bike}
+          tone="navy"
+        />
+        <MetricCard
+          label="Available vehicles"
+          value={availableVehiclesCount}
+          caption="Ready for customer booking"
+          icon={Check}
+          tone="green"
+        />
+        <MetricCard
+          label="Active bookings"
+          value={activeBookingsCount}
+          caption="Vehicles on the road"
+          icon={CalendarDays}
+          tone="blue"
+        />
+        <MetricCard
+          label="Total revenue"
+          value={`₹${totalPaidRevenue.toLocaleString('en-IN')}`}
+          caption="Total collections"
+          icon={CircleDollarSign}
+          tone="violet"
+        />
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.65fr)_minmax(300px,0.9fr)]">
@@ -123,42 +280,59 @@ function Dashboard() {
               <h2 className="text-sm font-semibold text-slate-900">Revenue overview</h2>
               <p className="mt-1 text-xs text-slate-500">Booking revenue · {dateRange}</p>
             </div>
-            <button type="button" aria-label="More revenue options" className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
+            <button
+              type="button"
+              aria-label="More revenue options"
+              className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100"
+            >
               <MoreHorizontal size={18} aria-hidden="true" />
             </button>
           </div>
           <div className="mt-4 flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="text-[30px] font-semibold tracking-tight text-slate-900">₹{monthlyRevenue.toLocaleString('en-IN')}</p>
+              <p className="text-[30px] font-semibold tracking-tight text-slate-900">
+                ₹{totalPaidRevenue.toLocaleString('en-IN')}
+              </p>
               <p className="mt-1 inline-flex items-center gap-1 text-xs font-medium text-emerald-700">
                 <ArrowUpRight size={14} aria-hidden="true" />
-                12.8% <span className="font-normal text-slate-400">vs. previous month</span>
+                Live synced <span className="font-normal text-slate-400">with payments</span>
               </p>
             </div>
             <div className="rounded-xl bg-amber-50 px-3.5 py-2.5">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-amber-700">Pending payments</p>
-              <p className="mt-1 text-lg font-semibold text-slate-900">₹18,450</p>
+              <p className="text-[10px] font-medium uppercase tracking-wide text-amber-700">
+                Pending payments
+              </p>
+              <p className="mt-1 text-lg font-semibold text-slate-900">
+                ₹{pendingPayments.toLocaleString('en-IN')}
+              </p>
             </div>
           </div>
           <div className="mt-3">
-            <BarChart data={revenueTrend} label="Illustrative monthly booking revenue trend" />
+            <BarChart data={revenueTrend} label="Monthly booking revenue trend" />
           </div>
         </Card>
 
         <Card className="p-5 sm:p-6">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Upcoming bookings</h2>
-              <p className="mt-1 text-xs text-slate-500">Your next customer handovers</p>
+              <h2 className="text-sm font-semibold text-slate-900">Recent bookings</h2>
+              <p className="mt-1 text-xs text-slate-500">Latest customer handovers</p>
             </div>
-            <Link to="/app/bookings" className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800 hover:text-emerald-950">
+            <Link
+              to="/app/bookings"
+              className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800 hover:text-emerald-950"
+            >
               See all <ChevronRight size={14} aria-hidden="true" />
             </Link>
           </div>
           <div className="mt-4 divide-y divide-slate-100">
-            {bookings.slice(0, 4).map((booking, index) => (
+            {recentBookingsList.map((booking, index) => (
               <div key={booking.id} className="flex items-center gap-3 py-3.5 first:pt-0 last:pb-0">
-                <div className={`grid size-10 shrink-0 place-items-center rounded-xl text-lg ${index % 2 ? 'bg-emerald-50' : 'bg-slate-100'}`}>
+                <div
+                  className={`grid size-10 shrink-0 place-items-center rounded-xl text-lg ${
+                    index % 2 ? 'bg-emerald-50' : 'bg-slate-100'
+                  }`}
+                >
                   {index % 2 ? '🏍️' : '🛵'}
                 </div>
                 <div className="min-w-0 flex-1">
@@ -171,7 +345,14 @@ function Dashboard() {
                 </div>
               </div>
             ))}
-            {bookings.length === 0 && <p className="py-8 text-center text-xs text-slate-500">No upcoming bookings in this demo.</p>}
+            {recentBookingsList.length === 0 && (
+              <div className="py-10 text-center">
+                <p className="text-xs font-medium text-slate-600">No bookings recorded yet</p>
+                <p className="mt-1 text-[11px] text-slate-400">
+                  Create your first rental booking with the button above.
+                </p>
+              </div>
+            )}
           </div>
         </Card>
       </div>
@@ -183,14 +364,22 @@ function Dashboard() {
               <h2 className="text-sm font-semibold text-slate-900">Currently rented</h2>
               <p className="mt-1 text-xs text-slate-500">Vehicles out on a booking</p>
             </div>
-            <Link to="/app/vehicles" className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800">
+            <Link
+              to="/app/vehicles"
+              className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800"
+            >
               Fleet <ChevronRight size={14} aria-hidden="true" />
             </Link>
           </div>
           <div className="mt-4 grid gap-2.5 sm:grid-cols-2">
-            {(rentedVehicles.length ? rentedVehicles : vehicles.slice(0, 2)).map((vehicle) => (
-              <div key={vehicle.id} className="flex items-center gap-3 rounded-xl border border-slate-100 p-3">
-                <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-xl">{vehicle.image}</span>
+            {rentedDisplayList.map((vehicle) => (
+              <div
+                key={vehicle.id}
+                className="flex items-center gap-3 rounded-xl border border-slate-100 p-3"
+              >
+                <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-xl">
+                  {vehicle.image || '🛵'}
+                </span>
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-xs font-semibold text-slate-800">{vehicle.name}</p>
                   <p className="mt-1 text-[11px] text-slate-400">{vehicle.registration}</p>
@@ -198,6 +387,11 @@ function Dashboard() {
                 <StatusBadge status={vehicle.availability} />
               </div>
             ))}
+            {rentedDisplayList.length === 0 && (
+              <p className="col-span-2 py-6 text-center text-xs text-slate-400">
+                No vehicles registered in fleet yet.
+              </p>
+            )}
           </div>
         </Card>
 
@@ -205,7 +399,7 @@ function Dashboard() {
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-slate-900">Quick overview</h2>
-              <p className="mt-1 text-xs text-slate-500">Workspace activity at a glance</p>
+              <p className="mt-1 text-xs text-slate-500">Fleet activity at a glance</p>
             </div>
             <span className="grid size-9 place-items-center rounded-xl bg-emerald-50 text-emerald-700">
               <CircleDollarSign size={17} aria-hidden="true" />
@@ -213,21 +407,24 @@ function Dashboard() {
           </div>
           <div className="mt-4 grid grid-cols-2 gap-3">
             <div className="rounded-xl bg-slate-50 p-3.5">
-              <p className="text-[11px] text-slate-500">Bookings this month</p>
-              <p className="mt-1.5 text-xl font-semibold text-slate-900">164</p>
-              <p className="mt-1 text-[10px] text-emerald-700">↑ 8% vs. September</p>
+              <p className="text-[11px] text-slate-500">Total Bookings</p>
+              <p className="mt-1.5 text-xl font-semibold text-slate-900">{bookings.length}</p>
+              <p className="mt-1 text-[10px] text-emerald-700">Live records</p>
             </div>
             <div className="rounded-xl bg-slate-50 p-3.5">
               <p className="text-[11px] text-slate-500">Fleet utilization</p>
-              <p className="mt-1.5 text-xl font-semibold text-slate-900">74%</p>
+              <p className="mt-1.5 text-xl font-semibold text-slate-900">{fleetUtilization}%</p>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-200">
-                <div className="h-full w-[74%] rounded-full bg-emerald-600" />
+                <div
+                  className="h-full rounded-full bg-emerald-600 transition-all"
+                  style={{ width: `${Math.min(fleetUtilization, 100)}%` }}
+                />
               </div>
             </div>
           </div>
           <div className="mt-3 flex items-center gap-2 rounded-xl border border-slate-100 px-3 py-2.5 text-xs text-slate-500">
             <MapPin size={14} aria-hidden="true" className="text-emerald-700" />
-            Ahmedabad, Gujarat <span className="ml-auto text-[10px] text-slate-400">Demo location</span>
+            Fleet Operations Hub <span className="ml-auto text-[10px] text-emerald-600 font-medium">Online</span>
             <Clock3 size={13} aria-hidden="true" />
           </div>
         </Card>
@@ -272,12 +469,14 @@ function Dashboard() {
                       type="button"
                       variant={status === 'Arrived' ? 'secondary' : 'quiet'}
                       className="min-h-8 px-2.5 text-xs"
-                      disabled={status === 'Arrived'}
-                      onClick={() => setArrivals((current) => current.map((item) =>
-                        item.bookingId === arrival.bookingId ? { ...item, status: 'Arrived' } : item,
-                      ))}
+                      disabled={status === 'Arrived' || updatingArrivalId === arrival.bookingId}
+                      onClick={() => handleMarkArrived(arrival)}
                     >
-                      {status === 'Arrived' ? 'Arrived' : 'Mark as Arrived'}
+                      {status === 'Arrived'
+                        ? 'Arrived'
+                        : updatingArrivalId === arrival.bookingId
+                          ? 'Updating...'
+                          : 'Mark as Arrived'}
                     </Button>
                   </div>
                 </div>

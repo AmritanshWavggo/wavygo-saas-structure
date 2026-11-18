@@ -5,6 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "backend": "PYTHONPATH=backend .venv/bin/python -m uvicorn app.main:app --reload --port 8001",
+    "seed": "PYTHONPATH=backend .venv/bin/python backend/seed.py",
+    "test:backend": "PYTHONPATH=backend .venv/bin/pytest backend/tests",
     "build": "vite build",
     "preview": "vite preview"
   },

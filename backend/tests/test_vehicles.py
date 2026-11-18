@@ -189,10 +189,16 @@ def test_toggle_keeps_availability_and_auth_stub_is_documented(vehicle_store):
     assert get_current_tenant() == {"tenant_id": "dev_tenant", "role": "owner"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Vehicle records do not store tenant ownership and route queries do not scope by tenant.",
-)
+def test_update_availability_does_not_change_show_on_wavygo(vehicle_store):
+    create(show_on_wavygo=True)
+    vehicle_id = stored_id(vehicle_store)
+    # Updating only availability must preserve showOnWavygo=True and status="Online"
+    updated = update(vehicle_id, fleet_availability="Available")
+    assert updated["fleetAvailability"] == "Available"
+    assert updated["showOnWavygo"] is True
+    assert updated["status"] == "Online"
+
+
 @pytest.mark.parametrize("operation", ["get", "list", "update", "toggle", "delete"])
 def test_tenant_b_cannot_access_tenant_a_vehicle(vehicle_store, operation):
     tenant_a = {"tenant_id": "tenant-a", "role": "owner"}

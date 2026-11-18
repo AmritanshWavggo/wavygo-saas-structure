@@ -33,21 +33,26 @@ class FakeCollection:
 
     @staticmethod
     def _matches(document: dict, query: dict) -> bool:
-        if "$or" in query:
-            return any(FakeCollection._matches(document, item) for item in query["$or"])
         for key, expected in query.items():
-            value = document.get(key)
-            if isinstance(expected, dict):
-                if "$ne" in expected and value == expected["$ne"]:
+            if key == "$and":
+                if not all(FakeCollection._matches(document, item) for item in expected):
                     return False
-                if "$in" in expected and value not in expected["$in"]:
+            elif key == "$or":
+                if not any(FakeCollection._matches(document, item) for item in expected):
                     return False
-                if "$regex" in expected and not re.search(
-                    expected["$regex"], str(value or ""), re.IGNORECASE if expected.get("$options") == "i" else 0
-                ):
+            else:
+                value = document.get(key)
+                if isinstance(expected, dict):
+                    if "$ne" in expected and value == expected["$ne"]:
+                        return False
+                    if "$in" in expected and value not in expected["$in"]:
+                        return False
+                    if "$regex" in expected and not re.search(
+                        expected["$regex"], str(value or ""), re.IGNORECASE if expected.get("$options") == "i" else 0
+                    ):
+                        return False
+                elif value != expected:
                     return False
-            elif value != expected:
-                return False
         return True
 
     def find_one(self, query: dict):

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+from pydantic import BaseModel, Field
+
+
+class VehicleInput(BaseModel):
+    vehicle_id: str = Field(..., description="Unique vehicle ID, e.g., VH-1042")
+    vehicle_name: str = Field(..., description="Vehicle make and model, e.g., Honda Activa 6G")
+    registration: Optional[str] = Field(None, description="Registration number, e.g., GJ 05 AB 4821")
+    price_per_day: float = Field(..., ge=0, description="Daily rental price in INR")
+    vehicle_type: Optional[str] = Field(None, description="Scooter, Motorcycle, Electric, etc.")
+
+
+class CustomerInput(BaseModel):
+    customer_id: Optional[str] = Field(None, description="Existing customer ID if available, e.g., CU-2048")
+    name: str = Field(..., min_length=1, description="Customer full name")
+    phone: str = Field(..., min_length=8, description="Contact phone number")
+    email: Optional[str] = Field("", description="Customer email address")
+
+
+class RentalInput(BaseModel):
+    start_date: str = Field(..., description="Pickup date in YYYY-MM-DD")
+    end_date: str = Field(..., description="Return date in YYYY-MM-DD")
+    pickup_time: str = Field("10:00", description="Pickup time in HH:MM")
+    return_time: str = Field("10:00", description="Return time in HH:MM")
+    pickup_location: str = Field(..., min_length=1, description="Location of handover/pickup")
+    add_ons: bool = Field(False, description="Whether optional add-on kit is included (+500/day)")
+    discount: float = Field(0.0, ge=0, description="Discount amount in INR")
+
+
+class PaymentInput(BaseModel):
+    method: str = Field("Cash", description="Payment method: Cash, UPI, Card, Net Banking")
+    deposit: bool = Field(False, description="Whether security deposit is taken (+2000)")
+    paid_amount: float = Field(0.0, ge=0, description="Initial amount paid at the counter")
+
+
+class OfflineBookingCreate(BaseModel):
+    vehicle: VehicleInput
+    customer: CustomerInput
+    rental: RentalInput
+    payment: PaymentInput
+    notes: Optional[str] = Field(None, description="Optional notes/remarks from counter staff")
+    tenant_id: Optional[str] = Field(None, description="Optional tenant/vendor ID")
+
+
+class OfflineBookingUpdate(BaseModel):
+    status: Optional[str] = Field(None, description="Active, Completed, Cancelled")
+    pickup_location: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PaymentRecordCreate(BaseModel):
+    amount: float = Field(..., gt=0, description="Payment amount collected in INR")
+    method: str = Field("Cash", description="Payment method: Cash, UPI, Card")
+    notes: Optional[str] = Field(None, description="Payment note or transaction ID")
+
+
+class OfflineBookingResponse(BaseModel):
+    id: str = Field(..., description="Booking ID, e.g., BK-123456")
+    customer: str
+    vehicle: str
+    dates: str
+    type: str = "Offline"
+    status: str
+    paid: float
+    pending: float
+    base_amount: float
+    add_on_amount: float
+    service_fee: float
+    discount_amount: float
+    deposit_amount: float
+    total_amount: float
+    rental_days: int
+    vehicle_details: dict
+    customer_details: dict
+    rental_details: dict
+    payment_details: dict
+    notes: Optional[str] = None
+    created_at: str
+    updated_at: str

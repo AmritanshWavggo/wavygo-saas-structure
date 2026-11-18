@@ -210,6 +210,52 @@ def list_customers(
     status_filter: Annotated[CustomerStatus | None, Query(alias="status")] = None,
 ) -> dict[str, Any]:
     try:
+        # If running with real MongoDB, ensure customers from bookings are backfilled
+        database = getattr(collection, "database", None)
+        if database is not None and hasattr(database, "__getitem__"):
+            try:
+                v_id = vendor["_id"]
+                b_cursor = database["bookings"].find(
+                    {"$or": [{"tenant_id": str(v_id)}, {"tenant_id": v_id}, {"vendor_id": str(v_id)}, {"vendor_id": v_id}]}
+                )
+                for b in b_cursor:
+                    c_name = b.get("customer")
+                    c_det = b.get("customer_details") or {}
+                    c_phone = str(c_det.get("phone") or b.get("phone") or "").strip()
+                    c_norm = normalize_phone(c_phone) if c_phone else ""
+                    c_email = (c_det.get("email") or b.get("email") or "").strip().lower() or None
+                    if c_name:
+                        q: dict[str, Any] = {"tenant_id": v_id}
+                        or_conds = []
+                        if c_norm:
+                            or_conds.append({"phone_normalized": c_norm})
+                        if c_phone:
+                            or_conds.append({"phone": c_phone})
+                        if c_email:
+                            or_conds.append({"email": c_email})
+                        if or_conds:
+                            q["$or"] = or_conds
+                        else:
+                            q["name"] = c_name
+                        if not collection.find_one(q):
+                            now = datetime.now(timezone.utc)
+                            collection.insert_one({
+                                "tenant_id": v_id,
+                                "name": c_name,
+                                "phone": c_phone or "—",
+                                "phone_normalized": c_norm,
+                                "email": c_email,
+                                "status": "Verified",
+                                "bookings": 1,
+                                "active": 1 if b.get("status") == "Active" else 0,
+                                "paid": float(b.get("paid") or 0),
+                                "pending": float(b.get("pending") or 0),
+                                "created_at": now,
+                                "updated_at": now,
+                            })
+            except Exception as backfill_exc:
+                logger.debug("Customers backfill from bookings: %s", backfill_exc)
+
         tenant_filter: dict[str, Any] = {"tenant_id": vendor["_id"]}
         if status_filter is not None:
             tenant_filter["status"] = status_filter

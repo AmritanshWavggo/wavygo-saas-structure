@@ -14,6 +14,7 @@ import Maintenance from './pages/Maintenance/Maintenance.jsx'
 import Staff from './pages/Staff/Staff.jsx'
 import Reports from './pages/Reports/Reports.jsx'
 import Settings from './pages/Settings/Settings.jsx'
+import NotificationsPage from './pages/Notifications.jsx'
 
 function App() {
   return (
@@ -32,6 +33,7 @@ function App() {
           <Route path="payments" element={<Payments />} />
           <Route path="documents" element={<Documents />} />
           <Route path="maintenance" element={<Maintenance />} />
+          <Route path="notifications" element={<NotificationsPage />} />
           <Route path="staff" element={<Staff />} />
           <Route path="reports" element={<Reports />} />
           <Route path="settings" element={<Settings />} />

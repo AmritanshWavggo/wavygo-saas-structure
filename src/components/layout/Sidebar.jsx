@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react'
 import {
   Activity,
   BarChart3,
+  Bell,
   Bike,
   CalendarDays,
   ChevronLeft,
@@ -13,6 +15,8 @@ import {
   X,
 } from 'lucide-react'
 import { NavLink } from 'react-router-dom'
+import { useDemoData } from '../../data/DemoDataContext.jsx'
+import { tenantService } from '../../services/tenantService.js'
 
 const links = [
   { label: 'Dashboard', to: '/app/dashboard', icon: LayoutDashboard },
@@ -22,12 +26,53 @@ const links = [
   { label: 'Payments', to: '/app/payments', icon: Wallet },
   { label: 'Documents', to: '/app/documents', icon: FileText },
   { label: 'Maintenance', to: '/app/maintenance', icon: Activity },
+  { label: 'Notifications', to: '/app/notifications', icon: Bell, badge: true },
   { label: 'Staff', to: '/app/staff', icon: Users },
   { label: 'Reports', to: '/app/reports', icon: BarChart3 },
   { label: 'Settings', to: '/app/settings', icon: Settings },
 ]
 
 function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile }) {
+  const { unreadNotificationsCount = 0 } = useDemoData()
+  const [profile, setProfile] = useState(null)
+
+  useEffect(() => {
+    let active = true
+    tenantService
+      .getCurrentTenant()
+      .then((data) => {
+        if (active && data) setProfile(data)
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const storedBusiness = localStorage.getItem('wavygo-business-name') || ''
+  const storedOwner = localStorage.getItem('wavygo-owner-name') || ''
+  const userEmail = sessionStorage.getItem('wavygo-user-email') || ''
+  const emailName = userEmail ? userEmail.split('@')[0] : ''
+
+  const businessName =
+    profile?.businessName ||
+    profile?.business_name ||
+    storedBusiness ||
+    (emailName ? `${emailName}'s Fleet` : 'Fleet Workspace')
+  const ownerName =
+    profile?.ownerName ||
+    profile?.owner_name ||
+    storedOwner ||
+    profile?.businessName ||
+    storedBusiness ||
+    emailName ||
+    'Vendor'
+  const initials = businessName
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join('') || 'WG'
   return (
     <>
       {mobileOpen && (
@@ -63,18 +108,18 @@ function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile }) {
         {!collapsed && (
           <div className="mx-3 mt-4 rounded-xl border border-white/[0.08] bg-white/[0.055] px-3 py-2.5">
             <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-100/50">Workspace</p>
-            <p className="mt-1 truncate text-xs font-medium text-white/90">WavyGo Mobility</p>
+            <p className="mt-1 truncate text-xs font-medium text-white/90">{businessName}</p>
           </div>
         )}
         {collapsed && (
-          <div className="mx-auto mt-4 grid size-9 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.055] text-[11px] font-semibold text-emerald-100" title="WavyGo Mobility">
-            WG
+          <div className="mx-auto mt-4 grid size-9 place-items-center rounded-xl border border-white/[0.08] bg-white/[0.055] text-[11px] font-semibold text-emerald-100" title={businessName}>
+            {initials}
           </div>
         )}
 
         <nav aria-label="Main navigation" className="mt-5 flex-1 space-y-1 overflow-y-auto px-2.5 pb-4">
           {!collapsed && <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-100/45">Manage</p>}
-          {links.map(({ label, to, icon: Icon }) => (
+          {links.map(({ label, to, icon: Icon, badge }) => (
             <NavLink
               key={to}
               to={to}
@@ -82,23 +127,42 @@ function Sidebar({ collapsed, onToggleCollapse, mobileOpen, onCloseMobile }) {
               onClick={onCloseMobile}
               title={collapsed ? label : undefined}
               className={({ isActive }) =>
-                `group flex min-h-10 items-center gap-3 rounded-xl px-3 text-[13px] font-medium transition ${collapsed ? 'justify-center px-0' : ''} ${
+                `group relative flex min-h-10 items-center gap-3 rounded-xl px-3 text-[13px] font-medium transition ${collapsed ? 'justify-center px-0' : ''} ${
                   isActive
                     ? 'bg-[#D8F4E7] text-[#123B2D] shadow-[0_4px_14px_rgba(0,0,0,0.12)]'
                     : 'text-emerald-50/70 hover:bg-white/[0.085] hover:text-white'
                 }`
               }
             >
-              <Icon size={18} strokeWidth={1.8} aria-hidden="true" className="shrink-0" />
-              {!collapsed && <span>{label}</span>}
+              <div className="relative shrink-0">
+                <Icon size={18} strokeWidth={1.8} aria-hidden="true" />
+                {badge && unreadNotificationsCount > 0 && collapsed && (
+                  <span className="absolute -top-1 -right-1 size-2 rounded-full bg-rose-500 ring-2 ring-[#102C25]" />
+                )}
+              </div>
+              {!collapsed && (
+                <div className="flex flex-1 items-center justify-between">
+                  <span>{label}</span>
+                  {badge && unreadNotificationsCount > 0 && (
+                    <span className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[10px] font-bold text-white leading-none">
+                      {unreadNotificationsCount}
+                    </span>
+                  )}
+                </div>
+              )}
             </NavLink>
           ))}
         </nav>
 
         <div className={`border-t border-white/[0.08] p-3 ${collapsed ? 'flex justify-center' : ''}`}>
           <div className={`flex items-center gap-3 rounded-xl bg-white/[0.055] p-2.5 ${collapsed ? 'justify-center bg-transparent p-0' : ''}`}>
-            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#D8F4E7] text-[11px] font-bold text-[#123B2D]">WM</span>
-            {!collapsed && <div className="min-w-0"><p className="truncate text-xs font-medium text-white/90">WavyGo Vendor</p><p className="mt-0.5 text-[10px] text-emerald-100/50">Demo workspace</p></div>}
+            <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#D8F4E7] text-[11px] font-bold text-[#123B2D]">{initials}</span>
+            {!collapsed && (
+              <div className="min-w-0">
+                <p className="truncate text-xs font-medium text-white/90">{ownerName}</p>
+                <p className="mt-0.5 text-[10px] text-emerald-100/50">{profile?.plan ? `${profile.plan} Plan` : 'Active Hub'}</p>
+              </div>
+            )}
           </div>
         </div>
       </aside>
