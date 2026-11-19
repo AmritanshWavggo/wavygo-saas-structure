@@ -34,13 +34,17 @@ def create_mongo_client() -> Optional[MongoClient]:
 
     _last_check_time = now
 
+    is_cloud = "mongodb+srv://" in uri or "ssl=true" in uri.lower() or "tls=true" in uri.lower()
+    timeout_ms = 8000 if is_cloud else 2000
+    connect_timeout_ms = 8000 if is_cloud else 2000
+
     try:
         import certifi
         client_kwargs: dict[str, Any] = {
-            "serverSelectionTimeoutMS": 2000,
-            "connectTimeoutMS": 2000,
+            "serverSelectionTimeoutMS": timeout_ms,
+            "connectTimeoutMS": connect_timeout_ms,
         }
-        if "mongodb+srv://" in uri or "ssl=true" in uri.lower() or "tls=true" in uri.lower():
+        if is_cloud:
             client_kwargs["tlsCAFile"] = certifi.where()
             client_kwargs["tlsAllowInvalidCertificates"] = True
         client = MongoClient(uri, **client_kwargs)
@@ -52,11 +56,17 @@ def create_mongo_client() -> Optional[MongoClient]:
         logger.warning("MongoDB primary connect failed: %s", exc)
         if "mongodb+srv://" in uri:
             try:
-                client = MongoClient(
-                    uri,
-                    serverSelectionTimeoutMS=2000,
-                    connectTimeoutMS=2000,
-                )
+                fallback_kwargs: dict[str, Any] = {
+                    "serverSelectionTimeoutMS": 10000,
+                    "connectTimeoutMS": 10000,
+                }
+                try:
+                    import certifi
+                    fallback_kwargs["tlsCAFile"] = certifi.where()
+                    fallback_kwargs["tlsAllowInvalidCertificates"] = True
+                except Exception:
+                    pass
+                client = MongoClient(uri, **fallback_kwargs)
                 client.admin.command("ping")
                 _mongo_client = client
                 _is_connected = True
