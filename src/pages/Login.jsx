@@ -465,9 +465,13 @@ function LoginPage() {
                   )}
                 </div>
                 {errors.otp && <p className="mt-1.5 text-xs text-rose-300">{errors.otp}</p>}
-                {!otpSent && (
+                {!otpSent ? (
                   <p className="mt-1 text-[11px] text-slate-400">
                     Click &ldquo;Send OTP&rdquo; above to receive your 6-digit code via email.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-emerald-300/90">
+                    Code sent! If you don&apos;t see it in your inbox, please check your <strong>Spam / Junk</strong> or Promotions folder.
                   </p>
                 )}
               </div>
