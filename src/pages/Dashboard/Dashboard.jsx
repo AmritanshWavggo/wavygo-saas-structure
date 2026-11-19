@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Clock3,
+  Loader2,
   MapPin,
   MoreHorizontal,
   Plus,
@@ -45,6 +46,9 @@ function Dashboard() {
     updateRecord,
     syncVehicles,
     syncOfflineBookings,
+    vehiclesTotal,
+    vehiclesLoading,
+    vehiclesError,
   } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
   const [backendStats, setBackendStats] = useState(null)
@@ -110,7 +114,7 @@ function Dashboard() {
       await dashboardService.markArrival(arrival.bookingId)
 
       // 4. Re-sync live data from backend
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
       if (syncOfflineBookings) await syncOfflineBookings()
       const stats = await dashboardService.getStats(dateRange)
       if (stats) setBackendStats(stats)
@@ -122,6 +126,7 @@ function Dashboard() {
   }
 
   useEffect(() => {
+    if (vehiclesLoading) return
     let active = true
     async function loadStats() {
       try {
@@ -137,7 +142,7 @@ function Dashboard() {
     return () => {
       active = false
     }
-  }, [dateRange, bookings.length, vehicles.length, payments.length])
+  }, [dateRange, bookings.length, vehicles, payments.length, vehiclesLoading])
 
   const rentedVehicles = vehicles.filter((v) => v.availability === 'Rented')
   const availableVehicles = vehicles.filter((v) => v.availability === 'Available')
@@ -189,7 +194,11 @@ function Dashboard() {
     backendStats?.fleet_utilization ??
     (vehicles.length > 0 ? Math.round((rentedVehicles.length / vehicles.length) * 100) : 0)
 
-  const totalVehiclesCount = backendStats?.total_vehicles ?? vehicles.length
+  const totalVehiclesCount = vehiclesLoading
+    ? <span role="status" aria-label="Loading vehicle count"><Loader2 size={22} className="animate-spin text-slate-400" /></span>
+    : vehiclesError
+      ? '—'
+      : vehiclesTotal ?? vehicles.length
   const availableVehiclesCount = backendStats?.available_vehicles ?? availableVehicles.length
   const activeBookingsCount = backendStats?.active_bookings ?? activeBookings.length
 
@@ -278,7 +287,12 @@ function Dashboard() {
         <MetricCard
           label="Total vehicles"
           value={totalVehiclesCount}
-          caption="Total fleet size"
+          caption={vehiclesError
+            ? <span className="inline-flex items-center gap-1 text-rose-600" role="alert">
+              <span>Vehicle count unavailable.</span>
+              <button type="button" onClick={() => syncVehicles?.()} className="font-semibold underline">Retry</button>
+            </span>
+            : vehiclesLoading ? 'Loading vehicle count...' : 'Total fleet size'}
           icon={Bike}
           tone="navy"
         />

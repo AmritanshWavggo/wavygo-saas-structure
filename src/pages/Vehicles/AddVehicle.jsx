@@ -145,7 +145,7 @@ function AddVehicle() {
       })
 
       await vehicleService.createVehicle(formData)
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
       navigate('/app/vehicles')
     } catch (err) {
       setIsSubmitting(false)
