@@ -39,6 +39,20 @@ function roundMoney(amount) {
   return Math.round((Number(amount) + Number.EPSILON) * 100) / 100
 }
 
+function VehicleCardImage({ vehicle, className }) {
+  const [imageError, setImageError] = useState(false)
+  const imageUrl = typeof vehicle.image === 'string' ? vehicle.image.trim() : ''
+  const isImageUrl = /^(https?:|data:image\/|blob:)/i.test(imageUrl)
+
+  return (
+    <span className={`grid shrink-0 place-items-center overflow-hidden ${className}`}>
+      {isImageUrl && !imageError
+        ? <img src={imageUrl} alt={`${vehicle.name || 'Vehicle'} photo`} className="h-full w-full object-cover" onError={() => setImageError(true)} />
+        : isImageUrl ? '🛵' : vehicle.image || '🛵'}
+    </span>
+  )
+}
+
 function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -319,7 +333,7 @@ function AddBooking() {
 
           <div className="mx-5 mb-5 space-y-4 rounded-2xl border border-slate-100 bg-slate-50/60 p-4 sm:mx-8 sm:p-5">
             <div className="flex items-center gap-3">
-              <span className="grid size-11 place-items-center rounded-xl bg-emerald-100 text-2xl">{selectedVehicle?.image || '🛵'}</span>
+              <VehicleCardImage vehicle={selectedVehicle} className="size-11 rounded-xl bg-emerald-100 text-2xl" />
               <div>
                 <p className="text-sm font-semibold text-slate-900">{confirmation.vehicleName}</p>
                 <p className="mt-1 text-xs text-slate-500">{selectedVehicle?.registration || selectedVehicle?.id}</p>
@@ -444,7 +458,7 @@ function AddBooking() {
                       {selectedVehicleId === vehicle.id && <span className="size-2.5 rounded-full bg-emerald-700" />}
                     </span>
                     <div className="flex items-center gap-3">
-                      <span className="grid size-12 place-items-center rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl">{vehicle.image || '🛵'}</span>
+                      <VehicleCardImage vehicle={vehicle} className="size-12 rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl" />
                       <div className="min-w-0">
                         <p className="truncate pr-5 text-sm font-semibold text-slate-900">{vehicle.name}</p>
                         <p className="mt-1 truncate text-xs text-slate-500">{vehicle.registration || vehicle.id}</p>
@@ -683,7 +697,7 @@ function AddBooking() {
 
               <div className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex items-center gap-3">
-                  <span className="grid size-12 place-items-center rounded-xl bg-emerald-50 text-2xl">{selectedVehicle?.image || '🛵'}</span>
+                  <VehicleCardImage vehicle={selectedVehicle} className="size-12 rounded-xl bg-emerald-50 text-2xl" />
                   <div>
                     <p className="text-sm font-semibold text-slate-900">{selectedVehicle?.name}</p>
                     <p className="mt-1 text-xs text-slate-500">{selectedVehicle?.registration || selectedVehicle?.id} · {selectedVehicle?.type}</p>
@@ -828,7 +842,7 @@ function AddBooking() {
           <div className="mt-4 rounded-xl bg-slate-50 p-3.5">
             {selectedVehicle ? (
               <div className="flex items-center gap-3">
-                <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-xl">{selectedVehicle.image || '🛵'}</span>
+                <VehicleCardImage vehicle={selectedVehicle} className="size-10 rounded-xl bg-emerald-50 text-xl" />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-800">{selectedVehicle.name}</p>
                   <p className="mt-0.5 text-xs text-slate-500">₹{Number(selectedVehicle.price).toLocaleString('en-IN')} / day</p>
