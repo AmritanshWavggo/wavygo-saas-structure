@@ -1742,11 +1742,23 @@ function Documents() {
             {(selected.file_url || selected.url) ? (
               <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
                 {String(selected.file_url || selected.url).toLowerCase().includes('.pdf') ? (
-                  <iframe
-                    src={selected.file_url || selected.url}
-                    title={selected.name}
-                    className="h-96 w-full border-0 bg-white"
-                  />
+                  <div className="flex flex-col items-center justify-center p-3">
+                    <img
+                      src={String(selected.file_url || selected.url).replace(/\.pdf$/i, '.jpg')}
+                      alt={selected.name}
+                      className="max-h-96 max-w-full rounded-lg object-contain shadow-sm bg-white"
+                      onError={(e) => {
+                        e.target.style.display = 'none'
+                        if (e.target.parentNode) {
+                          e.target.parentNode.innerHTML =
+                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline preview. Please check Cloudinary Security settings for PDF delivery.</p>'
+                        }
+                      }}
+                    />
+                    <p className="mt-2 text-center text-[11px] text-slate-500">
+                      Preview rendered via Cloudinary. To open direct PDF, ensure <strong>&ldquo;PDF and ZIP files delivery&rdquo;</strong> is enabled in your Cloudinary Security settings.
+                    </p>
+                  </div>
                 ) : (
                   <div className="flex max-h-96 items-center justify-center p-2">
                     <img

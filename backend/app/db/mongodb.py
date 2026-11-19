@@ -47,8 +47,9 @@ def create_mongo_client() -> Optional[MongoClient]:
         if is_cloud:
             client_kwargs["tlsCAFile"] = certifi.where()
             client_kwargs["tlsAllowInvalidCertificates"] = True
+        from pymongo.read_preferences import ReadPreference
         client = MongoClient(uri, **client_kwargs)
-        client.admin.command("ping")
+        client.get_database("admin", read_preference=ReadPreference.PRIMARY_PREFERRED).command("ping")
         _mongo_client = client
         _is_connected = True
         return _mongo_client
@@ -67,7 +68,7 @@ def create_mongo_client() -> Optional[MongoClient]:
                 except Exception:
                     pass
                 client = MongoClient(uri, **fallback_kwargs)
-                client.admin.command("ping")
+                client.get_database("admin", read_preference=ReadPreference.PRIMARY_PREFERRED).command("ping")
                 _mongo_client = client
                 _is_connected = True
                 return _mongo_client

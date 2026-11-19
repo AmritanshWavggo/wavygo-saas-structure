@@ -444,9 +444,12 @@ def create_vehicle(
             }
         )
     except ValidationError as exc:
+        msgs = [err.get("msg", "") for err in exc.errors()]
+        user_msg = "; ".join(str(m) for m in msgs if m) or "Validation failed."
+        user_msg = user_msg.replace("Value error, ", "")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
+            detail=user_msg,
         )
 
     # Validate document type labels
@@ -795,9 +798,12 @@ def update_vehicle(
     try:
         VehicleUpdateSchema.model_validate(schema_payload)
     except ValidationError as exc:
+        msgs = [err.get("msg", "") for err in exc.errors()]
+        user_msg = "; ".join(str(m) for m in msgs if m) or "Validation failed."
+        user_msg = user_msg.replace("Value error, ", "")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
+            detail=user_msg,
         )
 
     # ------------------------------------------------------------------
