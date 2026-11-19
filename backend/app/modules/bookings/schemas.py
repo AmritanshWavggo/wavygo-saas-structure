@@ -19,24 +19,18 @@ class CustomerInput(BaseModel):
     phone: str = Field(..., min_length=8, description="Contact phone number")
     email: Optional[str] = Field("", description="Customer email address")
     aadhaar: str = Field(..., description="12-digit Aadhaar number")
-    driving_licence: str = Field(..., description="Driving Licence number")
+    driving_licence: Optional[str] = Field(None, description="Driving Licence number")
 
     @field_validator("aadhaar", mode="before")
     @classmethod
-    def validate_aadhaar(cls, value: str) -> str:
-        value = value.strip() if value is not None else ""
-        if not value:
+    def validate_aadhaar(cls, value: object) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
             raise ValueError("Aadhaar Number is required.")
-        if len(value) != 12 or not value.isdigit():
+        if not isinstance(value, str):
             raise ValueError("Aadhaar Number must contain exactly 12 numeric digits.")
-        return value
-
-    @field_validator("driving_licence", mode="before")
-    @classmethod
-    def validate_driving_licence(cls, value: str) -> str:
-        value = value.strip() if value is not None else ""
-        if not value:
-            raise ValueError("Driving Licence Number is required.")
+        value = value.strip()
+        if len(value) != 12 or not value.isascii() or not value.isdigit():
+            raise ValueError("Aadhaar Number must contain exactly 12 numeric digits.")
         return value
 
 

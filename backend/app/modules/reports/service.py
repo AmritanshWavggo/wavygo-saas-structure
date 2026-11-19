@@ -143,9 +143,24 @@ class ReportsService:
     def get_summary(self, tenant_id: Optional[str] = None) -> ReportSummaryResponse:
         vehicles, bookings, payments, maintenance, customers = self._get_raw_data(tenant_id)
 
-        total_paid_bookings = sum(float(b.get("paid") or 0.0) for b in bookings)
-        total_paid_payments = sum(float(p.get("amount") or 0.0) for p in payments)
-        total_revenue = max(total_paid_bookings, total_paid_payments)
+        cancelled_booking_ids = {
+            str(b.get("id") or b.get("_id"))
+            for b in bookings
+            if str(b.get("status", "")).lower() == "cancelled"
+        }
+        collected_payments = [
+            p for p in payments
+            if str(p.get("status", "Paid")).lower() in {"paid", "partial"}
+            and str(p.get("booking") or p.get("booking_id") or "") not in cancelled_booking_ids
+        ]
+        if collected_payments:
+            total_revenue = round(sum(float(p.get("amount") or 0.0) for p in collected_payments), 2)
+        else:
+            total_revenue = round(sum(
+                float(b.get("paid") or 0.0)
+                for b in bookings
+                if str(b.get("status", "")).lower() != "cancelled"
+            ), 2)
 
         total_pending = sum(float(b.get("pending") or 0.0) for b in bookings)
         active_bookings = sum(1 for b in bookings if b.get("status") == "Active")
@@ -252,9 +267,24 @@ class ReportsService:
         vehicles, bookings, payments, maintenance, _ = self._get_raw_data(tenant_id)
         months = ["May", "Jun", "Jul", "Aug", "Sep", "Oct"]
 
-        total_paid_bookings = sum(float(b.get("paid") or 0.0) for b in bookings)
-        total_paid_payments = sum(float(p.get("amount") or 0.0) for p in payments)
-        total_rev = max(total_paid_bookings, total_paid_payments)
+        cancelled_booking_ids = {
+            str(b.get("id") or b.get("_id"))
+            for b in bookings
+            if str(b.get("status", "")).lower() == "cancelled"
+        }
+        collected_payments = [
+            p for p in payments
+            if str(p.get("status", "Paid")).lower() in {"paid", "partial"}
+            and str(p.get("booking") or p.get("booking_id") or "") not in cancelled_booking_ids
+        ]
+        if collected_payments:
+            total_rev = round(sum(float(p.get("amount") or 0.0) for p in collected_payments), 2)
+        else:
+            total_rev = round(sum(
+                float(b.get("paid") or 0.0)
+                for b in bookings
+                if str(b.get("status", "")).lower() != "cancelled"
+            ), 2)
 
         sec = section.strip().capitalize()
 

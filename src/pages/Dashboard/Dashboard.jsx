@@ -144,14 +144,46 @@ function Dashboard() {
   const activeBookings = bookings.filter((b) => b.status === 'Active')
 
   // Calculations with live backend prioritization
+  const nowForRange = new Date()
+  const rangeStart = (() => {
+    if (dateRange === 'This month') return new Date(nowForRange.getFullYear(), nowForRange.getMonth(), 1)
+    const days = dateRange === 'Last 7 days' ? 7 : dateRange === 'Last 90 days' ? 90 : 30
+    const start = new Date(nowForRange)
+    start.setHours(0, 0, 0, 0)
+    start.setDate(start.getDate() - days + 1)
+    return start
+  })()
+  const recordDateInRange = (record) => {
+    const rawDate = record.created_at || record.date || record.payment_date
+    if (!rawDate) return false
+    const parsed = new Date(rawDate)
+    return !Number.isNaN(parsed.getTime()) && parsed >= rangeStart && parsed <= nowForRange
+  }
+  const cancelledBookingIds = new Set(
+    bookings
+      .filter((booking) => String(booking.status || '').toLowerCase() === 'cancelled')
+      .map((booking) => String(booking.id)),
+  )
+  const excludedPaymentStatuses = new Set(['cancelled', 'failed', 'pending', 'unpaid', 'refunded', 'refund'])
+  const confirmedPayments = payments.filter((payment) => {
+    const status = String(payment.status || 'Paid').toLowerCase()
+    return !excludedPaymentStatuses.has(status)
+      && !cancelledBookingIds.has(String(payment.booking || payment.booking_id || ''))
+      && recordDateInRange(payment)
+  })
   const totalPaidRevenue =
     backendStats?.total_revenue ??
-    (bookings.reduce((sum, b) => sum + (Number(b.paid) || 0), 0) ||
-      payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0))
+    (confirmedPayments.length > 0
+      ? confirmedPayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+      : bookings
+          .filter((booking) => String(booking.status || '').toLowerCase() !== 'cancelled' && recordDateInRange(booking))
+          .reduce((sum, booking) => sum + (Number(booking.paid) || 0), 0))
 
   const pendingPayments =
     backendStats?.pending_payments ??
-    bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+    bookings
+      .filter((booking) => String(booking.status || '').toLowerCase() !== 'cancelled' && recordDateInRange(booking))
+      .reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
 
   const fleetUtilization =
     backendStats?.fleet_utilization ??
@@ -185,7 +217,7 @@ function Dashboard() {
         value: 0,
       })
     }
-    payments.forEach((p) => {
+    confirmedPayments.forEach((p) => {
       const amt = Number(p.amount) || 0
       if (!amt) return
       const pDate = p.date ? new Date(p.date) : null

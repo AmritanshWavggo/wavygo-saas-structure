@@ -51,6 +51,10 @@ class BookingService:
         except Exception:
             return f"{start_str} – {end_str}"
 
+    @staticmethod
+    def _round_money(amount: float) -> float:
+        return round(float(amount) + 1e-9, 2)
+
     def create_offline_booking(self, payload: OfflineBookingCreate, tenant_id: Optional[str] = None) -> OfflineBookingResponse:
         now_dt = datetime.now(timezone.utc)
         now_str = now_dt.isoformat()
@@ -61,16 +65,16 @@ class BookingService:
         rental_days = self._calculate_days(payload.rental.start_date, payload.rental.end_date)
         daily_price = float(payload.vehicle.price_per_day)
         
-        base_amount = daily_price * rental_days
-        add_on_amount = (500.0 * rental_days) if payload.rental.add_ons else 0.0
-        service_fee = round(base_amount * 0.05, 2)
-        subtotal = base_amount + add_on_amount + service_fee
-        discount_amount = min(subtotal, max(0.0, float(payload.rental.discount)))
-        deposit_amount = 2000.0 if payload.payment.deposit else 0.0
-        total_amount = subtotal - discount_amount + deposit_amount
-        
-        initial_paid = min(total_amount, float(payload.payment.paid_amount))
-        pending_amount = max(0.0, total_amount - initial_paid)
+        base_amount = self._round_money(daily_price * rental_days)
+        add_on_amount = self._round_money(500.0 * rental_days) if payload.rental.add_ons else 0.0
+        service_fee = self._round_money(base_amount * 0.05)
+        subtotal = self._round_money(base_amount + add_on_amount + service_fee)
+        discount_amount = self._round_money(min(subtotal, max(0.0, float(payload.rental.discount))))
+        deposit_amount = self._round_money(2000.0 if payload.payment.deposit else 0.0)
+        total_amount = self._round_money(subtotal - discount_amount + deposit_amount)
+
+        initial_paid = self._round_money(min(total_amount, float(payload.payment.paid_amount)))
+        pending_amount = self._round_money(max(0.0, total_amount - initial_paid))
         
         dates_formatted = self._format_date_range(payload.rental.start_date, payload.rental.end_date)
         
@@ -81,7 +85,7 @@ class BookingService:
             "email": payload.customer.email.strip() if payload.customer.email else "",
         }
         aadhaar_number = payload.customer.aadhaar.strip()
-        driving_licence_number = payload.customer.driving_licence.strip()
+        driving_licence_number = (payload.customer.driving_licence or "").strip() or None
         
         vehicle_details = {
             "id": payload.vehicle.vehicle_id,

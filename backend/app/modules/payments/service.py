@@ -271,9 +271,11 @@ class PaymentService:
 
     def get_stats(self, tenant_id: Optional[str] = None) -> PaymentStatsResponse:
         all_payments = self.list_payments(limit=1000, tenant_id=tenant_id)
-        total_collected = sum(p.amount for p in all_payments if p.status != "Refunded")
-        online_collected = sum(p.amount for p in all_payments if p.method in ["UPI", "Card", "Net Banking"] and p.status != "Refunded")
-        offline_collected = sum(p.amount for p in all_payments if p.method in ["Cash", "Bank Transfer"] and p.status != "Refunded")
+        collected_statuses = {"Paid", "Partial"}
+        collected = [p for p in all_payments if p.status in collected_statuses]
+        total_collected = round(sum(p.amount for p in collected), 2)
+        online_collected = round(sum(p.amount for p in collected if p.method in ["UPI", "Card", "Net Banking"]), 2)
+        offline_collected = round(sum(p.amount for p in collected if p.method in ["Cash", "Bank Transfer"]), 2)
         
         # Calculate pending balances from bookings if available
         pending_balance = 0.0

@@ -168,33 +168,54 @@ def _offline_booking_payload(customer_overrides=None):
     }
 
 
-def test_offline_booking_rejects_missing_or_invalid_identity_numbers():
-    missing_aadhaar = _offline_booking_payload({"aadhaar": None})
+def test_offline_booking_rejects_missing_or_invalid_aadhaar():
+    missing_aadhaar = _offline_booking_payload()
     missing_aadhaar["customer"].pop("aadhaar")
     assert client.post("/api/v1/bookings/offline", json=missing_aadhaar).status_code == 422
 
-    missing_dl = _offline_booking_payload({"driving_licence": ""})
-    assert client.post("/api/v1/bookings/offline", json=missing_dl).status_code == 422
-
-    missing_both = _offline_booking_payload({
-        "aadhaar": "",
-        "driving_licence": "",
-    })
-    assert client.post("/api/v1/bookings/offline", json=missing_both).status_code == 422
-
-    invalid_aadhaar = _offline_booking_payload({"aadhaar": "12345678901"})
-    assert client.post("/api/v1/bookings/offline", json=invalid_aadhaar).status_code == 422
-
-    invalid_aadhaar = _offline_booking_payload({"aadhaar": "1234567890123"})
-    assert client.post("/api/v1/bookings/offline", json=invalid_aadhaar).status_code == 422
+    for aadhaar in (None, "", "12345678901", "1234567890123", "12345678901a"):
+        invalid_aadhaar = _offline_booking_payload({"aadhaar": aadhaar})
+        assert client.post("/api/v1/bookings/offline", json=invalid_aadhaar).status_code == 422
 
 
-def test_offline_booking_accepts_valid_identity_numbers():
-    response = client.post(
-        "/api/v1/bookings/offline",
-        json=_offline_booking_payload(),
+def test_offline_booking_accepts_valid_aadhaar_with_optional_dl():
+    dl_cases = (
+        (False, None),
+        (True, None),
+        (True, ""),
+        (True, "GJ0520211234567"),
     )
+    for dl_is_provided, dl_value in dl_cases:
+        customer_overrides = {"driving_licence": dl_value} if dl_is_provided else {}
+        payload = _offline_booking_payload(customer_overrides)
+        if not dl_is_provided:
+            payload["customer"].pop("driving_licence")
+
+        response = client.post("/api/v1/bookings/offline", json=payload)
+        assert response.status_code == 201
+        booking = booking_service._memory_bookings[response.json()["id"]]
+        assert booking["aadhaar_number"] == "123456789012"
+        assert booking["driving_licence_number"] == (
+            "GJ0520211234567" if dl_value == "GJ0520211234567" else None
+        )
+
+
+def test_offline_booking_bill_uses_consistent_two_decimal_rounding():
+    payload = _offline_booking_payload()
+    payload["vehicle"]["price_per_day"] = 649.99
+    payload["rental"]["start_date"] = "2026-11-20"
+    payload["rental"]["end_date"] = "2026-11-21"
+    payload["rental"]["add_ons"] = False
+    payload["rental"]["discount"] = 10.005
+    payload["payment"]["paid_amount"] = 50.555
+    payload["payment"]["deposit"] = False
+
+    response = client.post("/api/v1/bookings/offline", json=payload)
     assert response.status_code == 201
-    booking = booking_service._memory_bookings[response.json()["id"]]
-    assert booking["aadhaar_number"] == "123456789012"
-    assert booking["driving_licence_number"] == "GJ0520211234567"
+    data = response.json()
+    assert data["base_amount"] == 649.99
+    assert data["service_fee"] == 32.5
+    assert data["discount_amount"] == 10.01
+    assert data["total_amount"] == 672.48
+    assert data["paid"] == 50.56
+    assert data["pending"] == 621.92
