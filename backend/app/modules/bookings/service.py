@@ -80,6 +80,8 @@ class BookingService:
             "phone": payload.customer.phone.strip(),
             "email": payload.customer.email.strip() if payload.customer.email else "",
         }
+        aadhaar_number = payload.customer.aadhaar.strip()
+        driving_licence_number = payload.customer.driving_licence.strip()
         
         vehicle_details = {
             "id": payload.vehicle.vehicle_id,
@@ -134,6 +136,8 @@ class BookingService:
             "rental_days": rental_days,
             "vehicle_details": vehicle_details,
             "customer_details": customer_details,
+            "aadhaar_number": aadhaar_number,
+            "driving_licence_number": driving_licence_number,
             "rental_details": rental_details,
             "payment_details": payment_details,
             "notes": payload.notes,
@@ -223,6 +227,8 @@ class BookingService:
                         },
                         "$set": {
                             "updated_at": now_utc,
+                            "aadhaar_number": aadhaar_number,
+                            "driving_licence_number": driving_licence_number,
                         },
                     }
                     if c_email and not existing_cust.get("email"):
@@ -236,6 +242,8 @@ class BookingService:
                         "phone": phone_raw,
                         "phone_normalized": phone_norm,
                         "email": c_email,
+                        "aadhaar_number": aadhaar_number,
+                        "driving_licence_number": driving_licence_number,
                         "status": "Verified",
                         "bookings": 1,
                         "active": 1,

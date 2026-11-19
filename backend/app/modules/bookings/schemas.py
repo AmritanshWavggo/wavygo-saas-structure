@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class VehicleInput(BaseModel):
@@ -18,6 +18,26 @@ class CustomerInput(BaseModel):
     name: str = Field(..., min_length=1, description="Customer full name")
     phone: str = Field(..., min_length=8, description="Contact phone number")
     email: Optional[str] = Field("", description="Customer email address")
+    aadhaar: str = Field(..., description="12-digit Aadhaar number")
+    driving_licence: str = Field(..., description="Driving Licence number")
+
+    @field_validator("aadhaar", mode="before")
+    @classmethod
+    def validate_aadhaar(cls, value: str) -> str:
+        value = value.strip() if value is not None else ""
+        if not value:
+            raise ValueError("Aadhaar Number is required.")
+        if len(value) != 12 or not value.isdigit():
+            raise ValueError("Aadhaar Number must contain exactly 12 numeric digits.")
+        return value
+
+    @field_validator("driving_licence", mode="before")
+    @classmethod
+    def validate_driving_licence(cls, value: str) -> str:
+        value = value.strip() if value is not None else ""
+        if not value:
+            raise ValueError("Driving Licence Number is required.")
+        return value
 
 
 class RentalInput(BaseModel):
