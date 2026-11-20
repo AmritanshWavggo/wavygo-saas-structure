@@ -446,7 +446,8 @@ def create_vehicle(
     except ValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=exc.errors(),
+            #detail=exc.errors(),
+            detail=exc.errors(include_context=False),
         )
 
     # Validate document type labels

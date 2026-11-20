@@ -296,7 +296,7 @@ class FinanceService:
         # 1. Fetch live payments data
         from app.modules.payments.service import payment_service
         all_payments = payment_service.list_payments(limit=1000, tenant_id=tenant_id)
-        valid_payments = [p for p in all_payments if p.status != "Refunded"]
+        valid_payments = [p for p in all_payments if p.status in {"Paid", "Partial"}]
 
         total_rev = sum(p.amount for p in valid_payments)
         online_rev = sum(p.amount for p in valid_payments if p.method in ["UPI", "Card", "Net Banking"])

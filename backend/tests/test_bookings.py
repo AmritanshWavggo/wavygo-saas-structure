@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 from app.main import app
+from app.modules.bookings.service import booking_service
 
 client = TestClient(app)
 
@@ -17,6 +18,8 @@ def test_create_offline_booking():
             "name": "Ravi Kumar",
             "phone": "+91 98989 12345",
             "email": "ravi.kumar@example.com",
+            "aadhaar": "123456789012",
+            "driving_licence": "GJ0520211234567",
         },
         "rental": {
             "start_date": "2026-11-01",
@@ -92,6 +95,8 @@ def test_update_status_and_payment():
         "customer": {
             "name": "Pooja Verma",
             "phone": "+91 91234 56789",
+            "aadhaar": "987654321098",
+            "driving_licence": "GJ0520207654321",
         },
         "rental": {
             "start_date": "2026-11-05",
@@ -133,3 +138,84 @@ def test_update_status_and_payment():
 def test_booking_not_found():
     res = client.get("/api/v1/bookings/offline/BK-999999")
     assert res.status_code == 404
+
+
+def _offline_booking_payload(customer_overrides=None):
+    customer = {
+        "name": "Test Customer",
+        "phone": "+91 98765 43210",
+        "aadhaar": "123456789012",
+        "driving_licence": "GJ0520211234567",
+    }
+    if customer_overrides:
+        customer.update(customer_overrides)
+    return {
+        "vehicle": {
+            "vehicle_id": "VH-TEST",
+            "vehicle_name": "Test Scooter",
+            "registration": "GJ 05 TEST 123",
+            "price_per_day": 500,
+        },
+        "customer": customer,
+        "rental": {
+            "start_date": "2026-11-20",
+            "end_date": "2026-11-21",
+            "pickup_location": "Test Desk",
+        },
+        "payment": {
+            "method": "Cash",
+        },
+    }
+
+
+def test_offline_booking_rejects_missing_or_invalid_aadhaar():
+    missing_aadhaar = _offline_booking_payload()
+    missing_aadhaar["customer"].pop("aadhaar")
+    assert client.post("/api/v1/bookings/offline", json=missing_aadhaar).status_code == 422
+
+    for aadhaar in (None, "", "12345678901", "1234567890123", "12345678901a"):
+        invalid_aadhaar = _offline_booking_payload({"aadhaar": aadhaar})
+        assert client.post("/api/v1/bookings/offline", json=invalid_aadhaar).status_code == 422
+
+
+def test_offline_booking_accepts_valid_aadhaar_with_optional_dl():
+    dl_cases = (
+        (False, None),
+        (True, None),
+        (True, ""),
+        (True, "GJ0520211234567"),
+    )
+    for dl_is_provided, dl_value in dl_cases:
+        customer_overrides = {"driving_licence": dl_value} if dl_is_provided else {}
+        payload = _offline_booking_payload(customer_overrides)
+        if not dl_is_provided:
+            payload["customer"].pop("driving_licence")
+
+        response = client.post("/api/v1/bookings/offline", json=payload)
+        assert response.status_code == 201
+        booking = booking_service._memory_bookings[response.json()["id"]]
+        assert booking["aadhaar_number"] == "123456789012"
+        assert booking["driving_licence_number"] == (
+            "GJ0520211234567" if dl_value == "GJ0520211234567" else None
+        )
+
+
+def test_offline_booking_bill_uses_consistent_two_decimal_rounding():
+    payload = _offline_booking_payload()
+    payload["vehicle"]["price_per_day"] = 649.99
+    payload["rental"]["start_date"] = "2026-11-20"
+    payload["rental"]["end_date"] = "2026-11-21"
+    payload["rental"]["add_ons"] = False
+    payload["rental"]["discount"] = 10.005
+    payload["payment"]["paid_amount"] = 50.555
+    payload["payment"]["deposit"] = False
+
+    response = client.post("/api/v1/bookings/offline", json=payload)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["base_amount"] == 649.99
+    assert data["service_fee"] == 32.5
+    assert data["discount_amount"] == 10.01
+    assert data["total_amount"] == 672.48
+    assert data["paid"] == 50.56
+    assert data["pending"] == 621.92

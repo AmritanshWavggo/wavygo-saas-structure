@@ -284,6 +284,14 @@ class DashboardService:
                 except Exception:
                     pass
 
+            if not payments:
+                try:
+                    from app.modules.payments.service import payment_service
+                    for p in payment_service._memory_payments.values():
+                        payments.append(dict(p))
+                except Exception:
+                    pass
+
             if not vehicles:
                 try:
                     # Seed defaults for offline / dev test suites
@@ -337,19 +345,86 @@ class DashboardService:
         active_bookings_count = sum(1 for b in bookings if b.get("status") == "Active")
         total_bookings_count = len(bookings)
 
-        # Total revenue = sum of paid amounts across bookings or payments
-        total_paid_bookings = sum(float(b.get("paid") or 0.0) for b in bookings)
-        total_paid_payments = sum(float(p.get("amount") or 0.0) for p in payments)
-        total_revenue = max(total_paid_bookings, total_paid_payments)
+        now = datetime.now(timezone.utc)
+        range_days = 30
+        range_start: Optional[datetime] = None
+        if date_range == "Last 7 days":
+            range_days = 7
+        elif date_range == "Last 90 days":
+            range_days = 90
+        if date_range == "This month":
+            range_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+        elif range_days:
+            range_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            from datetime import timedelta
+            range_start = range_start - timedelta(days=range_days - 1)
 
-        pending_payments = sum(float(b.get("pending") or 0.0) for b in bookings)
+        def record_date(record: Dict[str, Any]) -> Optional[datetime]:
+            value = record.get("created_at") or record.get("date") or record.get("payment_date")
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed
+            except Exception:
+                try:
+                    return datetime.strptime(str(value), "%b %d, %Y").replace(tzinfo=timezone.utc)
+                except Exception:
+                    return None
+
+        def in_range(record: Dict[str, Any]) -> bool:
+            record_dt = record_date(record)
+            if range_start is None or record_dt is None:
+                return False
+            return range_start <= record_dt <= now
+
+        cancelled_booking_ids = {
+            str(b.get("id") or b.get("_id"))
+            for b in bookings
+            if str(b.get("status", "")).lower() == "cancelled"
+        }
+        excluded_payment_statuses = {"cancelled", "failed", "pending", "unpaid", "refunded", "refund"}
+        confirmed_payments: Dict[str, Dict[str, Any]] = {}
+        for payment in payments:
+            payment_status = str(payment.get("status", "Paid")).lower()
+            booking_id = str(payment.get("booking") or payment.get("booking_id") or "")
+            payment_id = str(payment.get("id") or "")
+            if payment_status in excluded_payment_statuses:
+                continue
+            if booking_id in cancelled_booking_ids:
+                continue
+            if not in_range(payment):
+                continue
+            if payment_id:
+                confirmed_payments[payment_id] = payment
+
+        if confirmed_payments:
+            total_revenue = round(sum(
+                float(payment.get("amount") or 0.0)
+                for payment in confirmed_payments.values()
+            ), 2)
+        else:
+            total_revenue = round(sum(
+                float(b.get("paid") or 0.0)
+                for b in bookings
+                if str(b.get("status", "")).lower() != "cancelled"
+                and in_range(b)
+            ), 2)
+
+        pending_payments = round(sum(
+            float(b.get("pending") or 0.0)
+            for b in bookings
+            if str(b.get("status", "")).lower() != "cancelled"
+            and in_range(b)
+        ), 2)
 
         fleet_utilization = (
             round((rented_vehicles_count / total_vehicles) * 100) if total_vehicles > 0 else 0
         )
 
         # Dynamic monthly revenue trend for the last 6 months based on actual payment / booking dates
-        from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
 
         # Build list of the last 6 months: (year, month, label)
@@ -368,7 +443,7 @@ class DashboardService:
         monthly_buckets = {(y, m): 0.0 for y, m, _ in months_window}
 
         # Sum real payments into matching month
-        for p in payments:
+        for p in confirmed_payments.values():
             amt = float(p.get("amount") or 0.0)
             p_date_str = p.get("created_at") or p.get("date") or p.get("payment_date")
             if p_date_str and amt > 0:
@@ -381,7 +456,7 @@ class DashboardService:
                     pass
 
         # If no payments matched buckets but bookings exist, aggregate from bookings
-        if sum(monthly_buckets.values()) == 0 and bookings:
+        if not confirmed_payments and sum(monthly_buckets.values()) == 0 and bookings:
             for b in bookings:
                 amt = float(b.get("paid") or 0.0)
                 b_date_str = b.get("created_at")

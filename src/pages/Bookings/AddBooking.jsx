@@ -35,6 +35,10 @@ function getRentalDays(start, end) {
   return Math.max(1, Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000))
 }
 
+function roundMoney(amount) {
+  return Math.round((Number(amount) + Number.EPSILON) * 100) / 100
+}
+
 function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -47,7 +51,7 @@ function AddBooking() {
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [customerMode, setCustomerMode] = useState('existing')
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
-  const [customer, setCustomer] = useState({ name: '', phone: '', email: '' })
+  const [customer, setCustomer] = useState({ name: '', phone: '', email: '', aadhaar: '', drivingLicence: '' })
   const [rental, setRental] = useState({
     startDate: today,
     endDate: tomorrow,
@@ -76,15 +80,15 @@ function AddBooking() {
 
   const rentalDays = getRentalDays(rental.startDate, rental.endDate)
   const dailyPrice = Number(selectedVehicle?.price || 0)
-  const baseAmount = dailyPrice * rentalDays
-  const addOnAmount = rental.addOns ? 500 * rentalDays : 0
-  const serviceFee = Math.round(baseAmount * 0.05)
-  const subtotal = baseAmount + addOnAmount + serviceFee
-  const discountAmount = Math.min(subtotal, Math.max(0, Number(rental.discount) || 0))
+  const baseAmount = roundMoney(dailyPrice * rentalDays)
+  const addOnAmount = rental.addOns ? roundMoney(500 * rentalDays) : 0
+  const serviceFee = roundMoney(baseAmount * 0.05)
+  const subtotal = roundMoney(baseAmount + addOnAmount + serviceFee)
+  const discountAmount = roundMoney(Math.min(subtotal, Math.max(0, Number(rental.discount) || 0)))
   const depositAmount = payment.deposit ? 2000 : 0
-  const totalAmount = subtotal - discountAmount + depositAmount
-  const initialPaid = Math.min(totalAmount, Math.max(0, Number(payment.paidAmount) || 0))
-  const pendingAmount = Math.max(0, totalAmount - initialPaid)
+  const totalAmount = roundMoney(subtotal - discountAmount + depositAmount)
+  const initialPaid = roundMoney(Math.min(totalAmount, Math.max(0, Number(payment.paidAmount) || 0)))
+  const pendingAmount = roundMoney(Math.max(0, totalAmount - initialPaid))
 
   useEffect(() => {
     checkHealth()
@@ -113,6 +117,11 @@ function AddBooking() {
     if (step === 0 && !selectedVehicleId) nextErrors.vehicle = 'Select a vehicle to continue.'
     if (step === 1) {
       if (customerMode === 'existing' && !selectedCustomerId) nextErrors.selectedCustomer = 'Choose a customer or add a new one.'
+      if (!customer.aadhaar.trim()) {
+        nextErrors.aadhaar = 'Aadhaar Number is required.'
+      } else if (!/^\d{12}$/.test(customer.aadhaar.trim())) {
+        nextErrors.aadhaar = 'Aadhaar Number must contain exactly 12 numeric digits.'
+      }
       if (customerMode === 'new') {
         if (!customer.name.trim()) nextErrors.name = 'Enter the customer’s full name.'
         if (!/^[+()\d\s-]{8,}$/.test(customer.phone.trim())) nextErrors.phone = 'Enter a valid phone number.'
@@ -152,6 +161,8 @@ function AddBooking() {
         name: customerName,
         phone: activeCustomer.phone.trim(),
         email: activeCustomer.email ? activeCustomer.email.trim() : '',
+        aadhaar: customer.aadhaar.trim(),
+        driving_licence: customer.drivingLicence.trim(),
       },
       rental: {
         start_date: rental.startDate,
@@ -466,7 +477,7 @@ function AddBooking() {
               </div>
 
               {customerMode === 'existing' ? (
-                <div>
+                <div className="space-y-4">
                   <label className="mb-1.5 block text-sm font-semibold text-slate-700">Choose customer<span className="ml-1 text-rose-500">*</span></label>
                   <div className="space-y-2">
                     {customers.map((item) => (
@@ -490,13 +501,19 @@ function AddBooking() {
                     ))}
                   </div>
                   {errors.selectedCustomer && <p className="mt-1.5 text-xs text-rose-600">{errors.selectedCustomer}</p>}
+                  {selectedCustomerId && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
+                      <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Full name" name="name" value={customer.name} onChange={(value) => updateCustomer('name', value)} error={errors.name} placeholder="e.g. Ramesh Kumar" required />
                   <Field label="Phone number" name="phone" value={customer.phone} onChange={(value) => updateCustomer('phone', value)} error={errors.phone} placeholder="+91 98765 43210" required />
-                  <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} error={errors.drivingLicence} placeholder="Enter licence number" required />
-                  <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" maxLength={12} required />
+                  <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                  <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
                   <div className="sm:col-span-2">
                     <Field label="Email address (optional)" name="email" value={customer.email} onChange={(value) => updateCustomer('email', value)} error={errors.email} placeholder="ramesh@example.com" type="email" />
                   </div>
