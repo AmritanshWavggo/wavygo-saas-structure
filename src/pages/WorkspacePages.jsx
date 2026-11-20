@@ -1809,7 +1809,7 @@ function Maintenance() {
     setIsSyncing(true)
     try {
       if (syncMaintenance) await syncMaintenance()
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
     } finally {
       setIsSyncing(false)
     }
@@ -1861,7 +1861,7 @@ function Maintenance() {
                   try {
                     await maintenanceService.completeMaintenance(row.id)
                     if (syncMaintenance) await syncMaintenance()
-                    if (syncVehicles) await syncVehicles()
+                    if (syncVehicles) await syncVehicles({ force: true })
                     else updateRecord('maintenance', row.id, { status: 'Completed' })
                   } catch {
                     updateRecord('maintenance', row.id, { status: 'Completed' })
@@ -1903,7 +1903,7 @@ function Maintenance() {
                 payment_status: values.payment,
               })
               if (syncMaintenance) await syncMaintenance()
-              if (syncVehicles) await syncVehicles()
+              if (syncVehicles) await syncVehicles({ force: true })
             } catch {
               addRecord('maintenance', {
                 ...values,

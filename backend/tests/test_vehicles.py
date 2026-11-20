@@ -285,3 +285,25 @@ def test_listing_all_returns_online_and_offline_vehicles(vehicle_store):
 def test_list_limit_declares_a_maximum_page_size(vehicle_store):
     limit = inspect.signature(router.list_vehicles).parameters["limit"].default
     assert any(getattr(constraint, "le", None) == 100 for constraint in limit.metadata)
+
+
+def test_vehicle_list_total_tracks_empty_create_and_delete(vehicle_store):
+    def list_all():
+        return router.list_vehicles(
+            TENANT,
+            search=None,
+            type=None,
+            fuel=None,
+            fleet_availability=None,
+            listing="all",
+            page=1,
+            limit=100,
+        )
+
+    assert list_all()["total"] == 0
+
+    created = create()
+    assert list_all()["total"] == 1
+
+    router.delete_vehicle(created["id"], TENANT)
+    assert list_all()["total"] == 0

@@ -238,7 +238,7 @@ function AddBooking() {
         }
 
         if (syncOfflineBookings) await syncOfflineBookings()
-        if (syncVehicles) await syncVehicles()
+        if (syncVehicles) await syncVehicles({ force: true })
         if (syncCustomers) await syncCustomers()
 
         setConfirmation({

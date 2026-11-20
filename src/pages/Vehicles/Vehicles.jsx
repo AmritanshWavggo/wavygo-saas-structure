@@ -106,7 +106,7 @@ function Vehicles() {
         updateRecord('vehicles', vehicle.id, { availability: newStatus, fleetAvailability: newStatus })
       }
       if (syncVehicles) {
-        await syncVehicles()
+        await syncVehicles({ force: true })
       }
       setNotice(`Availability updated: ${vehicle.name} is now ${newStatus}.`)
     } catch (err) {
@@ -164,7 +164,7 @@ function Vehicles() {
 
       await Promise.allSettled([
         syncMaintenance ? syncMaintenance() : Promise.resolve(),
-        syncVehicles ? syncVehicles() : Promise.resolve(),
+        syncVehicles ? syncVehicles({ force: true }) : Promise.resolve(),
       ])
 
       setNotice(`Vehicle ${maintenanceVehicle.name} sent to Maintenance! Record ${created.id} is now live in the Maintenance module.`)
@@ -248,7 +248,7 @@ function Vehicles() {
       }
 
       if (syncVehicles) {
-        await syncVehicles()
+        await syncVehicles({ force: true })
       }
 
       setNotice(`Vehicle ${editFormData.makeModel} updated successfully in database!`)
@@ -288,7 +288,7 @@ function Vehicles() {
     const nextState = !listed
     try {
       await vehicleService.toggleShowOnWavygo(id, nextState)
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
       else updateRecord('vehicles', id, { showOnWavygo: nextState, show_on_wavygo: nextState, status: nextState ? 'Online' : 'Offline' })
       setNotice(`Listing updated: ${vehicle.name} is now ${nextState ? 'Online on WavyGo' : 'taken Offline'}.`)
     } catch {
@@ -303,7 +303,7 @@ function Vehicles() {
     try {
       await vehicleService.deleteVehicle(vehicle.id)
       if (deleteRecord) deleteRecord('vehicles', vehicle.id)
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
       setNotice(`Vehicle ${vehicle.name} deleted successfully from database.`)
     } catch (err) {
       setNotice(`Failed to delete vehicle: ${err.message || 'Error occurred'}`)

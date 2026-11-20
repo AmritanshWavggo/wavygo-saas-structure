@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { authService } from '../services/authService.js'
 import { bookingService } from '../services/bookingService.js'
 import { customerService } from '../services/customerService.js'
@@ -47,50 +47,83 @@ export function DemoDataProvider({ children }) {
     notifications: [],
     financeOverview: null,
   })
+  const [vehiclesTotal, setVehiclesTotal] = useState(null)
+  const [vehiclesLoading, setVehiclesLoading] = useState(true)
+  const [vehiclesError, setVehiclesError] = useState(null)
+  const vehicleSyncRef = useRef(null)
 
-  async function syncVehicles() {
-    try {
-      const res = await vehicleService.listVehicles({ limit: 100 })
-      const backendVehicles = Array.isArray(res) ? res : res?.items || []
-      const mapped = backendVehicles.map((v) => {
-        const firstPhotoUrl = Array.isArray(v.photos) && v.photos.length > 0
-          ? (typeof v.photos[0] === 'string' ? v.photos[0] : v.photos[0]?.url)
-          : null
-
-        return {
-          id: v.id || v._id,
-          name: v.makeModel || v.name,
-          makeModel: v.makeModel || v.name,
-          trim: v.trim || '',
-          registration: v.registration || v.registrationNumber || '',
-          type: v.type || 'Motorcycle',
-          fuel: v.fuel || 'Petrol',
-          year: Number(v.year) || 2024,
-          color: v.color || '',
-          engineCapacity: v.engineCapacity ? Number(v.engineCapacity) : null,
-          rcStatus: v.rcStatus || 'Verified',
-          seats: Number(v.seats) || 2,
-          showOnWavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
-          show_on_wavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
-          status: Boolean(v.showOnWavygo ?? (v.status === 'Online')) ? 'Online' : 'Offline',
-          availability: v.fleetAvailability || v.availability || 'Available',
-          fleetAvailability: v.fleetAvailability || v.availability || 'Available',
-          price: Number(v.dailyRate || v.price || 0),
-          dailyRate: Number(v.dailyRate || v.price || 0),
-          image: firstPhotoUrl || (v.type === 'Electric' ? '⚡' : v.type === 'Scooter' ? '🛵' : '🏍️'),
-          photos: v.photos || [],
-          documents: v.documents || [],
-          backendSynced: true,
-        }
-      })
-      setData((current) => ({
-        ...current,
-        vehicles: mapped,
-      }))
-    } catch (err) {
-      console.warn('syncVehicles error:', err)
+  const syncVehicles = useCallback(async ({ force = false } = {}) => {
+    if (vehicleSyncRef.current) {
+      if (!force) return vehicleSyncRef.current
+      await vehicleSyncRef.current
     }
-  }
+    if (vehicleSyncRef.current) return vehicleSyncRef.current
+
+    setVehiclesLoading(true)
+    setVehiclesError(null)
+    const request = (async () => {
+      try {
+        const res = await vehicleService.listVehicles({ limit: 100 })
+        const backendVehicles = Array.isArray(res) ? res : res?.items
+        if (!Array.isArray(backendVehicles)) {
+          throw new Error('Invalid vehicle list response.')
+        }
+
+        const mapped = backendVehicles.map((v) => {
+          const firstPhotoUrl = Array.isArray(v.photos) && v.photos.length > 0
+            ? (typeof v.photos[0] === 'string' ? v.photos[0] : v.photos[0]?.url)
+            : null
+
+          return {
+            id: v.id || v._id,
+            name: v.makeModel || v.name,
+            makeModel: v.makeModel || v.name,
+            trim: v.trim || '',
+            registration: v.registration || v.registrationNumber || '',
+            type: v.type || 'Motorcycle',
+            fuel: v.fuel || 'Petrol',
+            year: Number(v.year) || 2024,
+            color: v.color || '',
+            engineCapacity: v.engineCapacity ? Number(v.engineCapacity) : null,
+            rcStatus: v.rcStatus || 'Verified',
+            seats: Number(v.seats) || 2,
+            showOnWavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
+            show_on_wavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
+            status: Boolean(v.showOnWavygo ?? (v.status === 'Online')) ? 'Online' : 'Offline',
+            availability: v.fleetAvailability || v.availability || 'Available',
+            fleetAvailability: v.fleetAvailability || v.availability || 'Available',
+            price: Number(v.dailyRate || v.price || 0),
+            dailyRate: Number(v.dailyRate || v.price || 0),
+            image: firstPhotoUrl || (v.type === 'Electric' ? '⚡' : v.type === 'Scooter' ? '🛵' : '🏍️'),
+            photos: v.photos || [],
+            documents: v.documents || [],
+            backendSynced: true,
+          }
+        })
+        const total = Array.isArray(res)
+          ? mapped.length
+          : Number.isInteger(res.total) && res.total >= 0
+            ? res.total
+            : mapped.length
+
+        setData((current) => ({
+          ...current,
+          vehicles: mapped,
+        }))
+        setVehiclesTotal(total)
+        return mapped
+      } catch (err) {
+        console.warn('syncVehicles error:', err)
+        setVehiclesError(err?.message || 'Unable to load vehicles.')
+        return null
+      } finally {
+        setVehiclesLoading(false)
+        vehicleSyncRef.current = null
+      }
+    })()
+    vehicleSyncRef.current = request
+    return request
+  }, [])
 
   async function syncCustomers() {
     try {
@@ -439,6 +472,9 @@ export function DemoDataProvider({ children }) {
     <DemoDataContext.Provider
       value={{
         ...data,
+        vehiclesTotal,
+        vehiclesLoading,
+        vehiclesError,
         addRecord,
         updateRecord,
         deleteRecord,
