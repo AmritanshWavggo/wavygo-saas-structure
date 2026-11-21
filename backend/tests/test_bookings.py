@@ -33,7 +33,7 @@ def test_create_offline_booking():
         "payment": {
             "method": "Cash",
             "deposit": True,
-            "paid_amount": 1000,
+            "paid_amount": 0,
         },
         "notes": "Customer presented valid driving license.",
     }
@@ -43,7 +43,7 @@ def test_create_offline_booking():
     data = response.json()
 
     assert data["type"] == "Offline"
-    assert data["status"] == "Active"
+    assert data["status"] == "Confirmed"
     assert data["customer"] == "Ravi Kumar"
     assert data["vehicle"] == "Honda Activa 6G"
     assert data["rental_days"] == 2
@@ -58,10 +58,8 @@ def test_create_offline_booking():
     # Deposit: 2000
     # Total: 2362.9 - 100 + 2000 = 4262.9
     assert round(data["total_amount"], 1) == 4262.9
-    # Paid: 1000
-    assert data["paid"] == 1000.0
-    # Pending: 4262.9 - 1000 = 3262.9
-    assert round(data["pending"], 1) == 3262.9
+    assert data["paid"] == 0.0
+    assert round(data["pending"], 1) == 4262.9
 
 
 def test_list_and_get_offline_bookings():
@@ -167,8 +165,7 @@ def test_update_status_and_payment(monkeypatch):
             f"/api/v1/bookings/offline/{booking_id}",
             json={"status": "Completed"},
         )
-        assert patch_res.status_code == 200
-        assert patch_res.json()["status"] == "Completed"
+        assert patch_res.status_code == 409
     finally:
         app.dependency_overrides.pop(get_current_vendor, None)
 
@@ -238,7 +235,32 @@ def test_offline_booking_accepts_valid_aadhaar_with_optional_dl():
         )
 
 
-def test_offline_booking_bill_uses_consistent_two_decimal_rounding():
+def test_offline_booking_bill_uses_consistent_two_decimal_rounding(monkeypatch):
+    from bson import ObjectId
+    from app.modules.auth.security import get_current_vendor
+    import mongomock
+
+    mock_db = mongomock.MongoClient()["booking_rounding_test"]
+    mock_db["payments"].create_index(
+        [("tenant_id", 1), ("idempotency_key", 1)],
+        unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string", "$gt": ""}},
+    )
+    mock_db["payments"].create_index(
+        [("tenant_id", 1), ("booking", 1), ("transaction_reference", 1)],
+        unique=True,
+        partialFilterExpression={"transaction_reference": {"$type": "string", "$gt": ""}},
+    )
+    tenant_id = str(ObjectId())
+    monkeypatch.setattr("app.modules.bookings.service.get_database", lambda: mock_db)
+    monkeypatch.setattr("app.modules.payments.service.get_database", lambda: mock_db)
+    monkeypatch.setattr("app.modules.notifications.service.get_database", lambda: mock_db)
+    monkeypatch.setattr("app.modules.bookings.router._get_tenant_id", lambda request: tenant_id)
+
+    def authenticated_vendor():
+        return {"_id": ObjectId(tenant_id), "email": "rounding-test@example.com", "is_active": True}
+
+    app.dependency_overrides[get_current_vendor] = authenticated_vendor
     payload = _offline_booking_payload()
     payload["vehicle"]["price_per_day"] = 649.99
     payload["rental"]["start_date"] = "2026-11-20"
@@ -248,12 +270,18 @@ def test_offline_booking_bill_uses_consistent_two_decimal_rounding():
     payload["payment"]["paid_amount"] = 50.555
     payload["payment"]["deposit"] = False
 
-    response = client.post("/api/v1/bookings/offline", json=payload)
-    assert response.status_code == 201
-    data = response.json()
-    assert data["base_amount"] == 649.99
-    assert data["service_fee"] == 32.5
-    assert data["discount_amount"] == 10.01
-    assert data["total_amount"] == 672.48
-    assert data["paid"] == 50.56
-    assert data["pending"] == 621.92
+    try:
+        response = client.post("/api/v1/bookings/offline", json=payload)
+        assert response.status_code == 201
+        data = response.json()
+        assert data["base_amount"] == 649.99
+        assert data["service_fee"] == 32.5
+        assert data["discount_amount"] == 10.01
+        assert data["total_amount"] == 672.48
+        # The booking service rounds the requested 50.555 advance to ₹50.56,
+        # then records that rounded amount through the payment service.
+        assert data["paid"] == 50.56
+        assert data["pending"] == 621.92
+        assert mock_db["payments"].find_one({"booking": data["id"], "amount": 50.56}) is not None
+    finally:
+        app.dependency_overrides.pop(get_current_vendor, None)
