@@ -112,6 +112,28 @@ def test_legacy_active_can_return_and_late_charge_is_paise_safe(lifecycle_db):
     assert returned.additionalCharges[0]["type"] == "late"
 
 
+def test_lifecycle_respects_open_maintenance_vehicle_state(lifecycle_db):
+    db, tenant = lifecycle_db
+    add_booking(db, tenant)
+    db["maintenance"].insert_one({
+        "id": "MT-LIFE", "tenant_id": tenant, "vehicle_id": "VH-LIFE", "status": "Ongoing",
+    })
+    with pytest.raises(HTTPException) as handover:
+        booking_service.handover_booking("BK-LIFE", LifecycleActionRequest(), tenant)
+    assert handover.value.status_code == 409
+
+    db["maintenance"].delete_many({})
+    booking_service.handover_booking("BK-LIFE", LifecycleActionRequest(), tenant)
+    db["maintenance"].insert_one({
+        "id": "MT-LIFE", "tenant_id": tenant, "vehicle_id": "VH-LIFE", "status": "Ongoing",
+    })
+    booking_service.return_booking("BK-LIFE", ReturnBookingRequest(), tenant)
+    assert db["vehicles"].find_one({"id": "VH-LIFE"})["availability"] == "Maintenance"
+    booking_service.complete_booking("BK-LIFE", LifecycleActionRequest(), tenant)
+    vehicle = db["vehicles"].find_one({"id": "VH-LIFE"})
+    assert vehicle["availability"] == vehicle["fleetAvailability"] == "Maintenance"
+
+
 def test_return_never_reduces_total_below_paid_and_preserves_history(lifecycle_db):
     db, tenant = lifecycle_db
     add_booking(db, tenant, status="Active", paid=900.0)

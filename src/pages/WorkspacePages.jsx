@@ -1849,7 +1849,7 @@ function Documents() {
 }
 
 function Maintenance() {
-  const { maintenance, vehicles = [], addRecord, updateRecord, syncMaintenance, syncVehicles } = useDemoData()
+  const { maintenance, vehicles = [], syncMaintenance, syncVehicles } = useDemoData()
   const [tab, setTab] = useState('All')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -1918,10 +1918,7 @@ function Maintenance() {
                     await maintenanceService.completeMaintenance(row.id)
                     if (syncMaintenance) await syncMaintenance()
                     if (syncVehicles) await syncVehicles({ force: true })
-                    else updateRecord('maintenance', row.id, { status: 'Completed' })
-                  } catch {
-                    updateRecord('maintenance', row.id, { status: 'Completed' })
-                  }
+                  } catch {}
                 }}>
                   Complete
                 </Button>
@@ -1960,14 +1957,7 @@ function Maintenance() {
               })
               if (syncMaintenance) await syncMaintenance()
               if (syncVehicles) await syncVehicles({ force: true })
-            } catch {
-              addRecord('maintenance', {
-                ...values,
-                id: nextId('MT', maintenance),
-                cost: Number(values.cost),
-                status: 'Ongoing',
-              })
-            }
+            } catch {}
             setShowForm(false)
           }}
         />
@@ -2382,7 +2372,8 @@ function Reports() {
   const totalPending =
     backendReports?.summary?.total_pending ??
     bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
-  const rentedVehiclesCount = vehicles.filter((v) => v.availability === 'Rented').length
+  const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
+  const rentedVehiclesCount = vehicles.filter((v) => vehicleState(v) === 'Rented').length
   const fleetUtil =
     backendReports?.summary?.fleet_utilization ??
     (vehicles.length > 0 ? Math.round((rentedVehiclesCount / vehicles.length) * 100) : 0)
@@ -2393,7 +2384,7 @@ function Reports() {
     const t = v.type || 'Other'
     if (!typeMap[t]) typeMap[t] = { total: 0, rented: 0 }
     typeMap[t].total += 1
-    if (v.availability === 'Rented') typeMap[t].rented += 1
+    if (vehicleState(v) === 'Rented') typeMap[t].rented += 1
   })
   const utilizationByType =
     backendReports?.utilization_by_type?.length > 0

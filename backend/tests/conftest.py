@@ -104,6 +104,7 @@ def vehicle_store(monkeypatch):
 
     monkeypatch.setattr(vehicles_router, "_get_vehicles_col", lambda: vehicles)
     monkeypatch.setattr(vehicles_router, "_get_bookings_col", lambda: bookings)
+    monkeypatch.setattr(vehicles_router, "_get_maintenance_col", lambda: bookings)
     monkeypatch.setattr(vehicles_router.cloudinary_service, "upload_file", upload)
     monkeypatch.setattr(vehicles_router.cloudinary_service, "delete_file", delete)
     return type("VehicleStore", (), {

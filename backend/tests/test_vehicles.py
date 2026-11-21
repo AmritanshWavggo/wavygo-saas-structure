@@ -171,12 +171,17 @@ def test_delete_booking_protection_and_cloudinary_cleanup(vehicle_store):
 def test_list_filters_pagination_listing_and_safe_search(vehicle_store):
     create(show_on_wavygo=True, registration_number="GJ05AB1111", make_model="A+B Bike")
     create(show_on_wavygo=False, registration_number="GJ05AB2222", make_model="Second Bike")
+    create(show_on_wavygo=False, registration_number="GJ05AB3333", make_model="In Service")
+    vehicle_store.vehicles.documents[-1]["availability"] = "Maintenance"
+    vehicle_store.vehicles.documents[-1]["fleetAvailability"] = "Maintenance"
     listed = router.list_vehicles(TENANT, search="A+B", type="Scooter", fuel="Petrol", fleet_availability="Available", listing="online", page=1, limit=1)
     assert listed["total"] == 1 and listed["items"][0]["name"] == "A+B Bike"
     offline = router.list_vehicles(TENANT, search=None, type=None, fuel=None, fleet_availability=None, listing="offline", page=1, limit=20)
-    assert offline["total"] == 1
+    assert offline["total"] == 2
     injection = router.list_vehicles(TENANT, search='{"$ne":""}', type=None, fuel=None, fleet_availability=None, listing="all", page=1, limit=20)
     assert injection["total"] == 0
+    available = router.list_vehicles(TENANT, search=None, type=None, fuel=None, fleet_availability="Available", listing="all", page=1, limit=20)
+    assert all(item["fleetAvailability"] != "Maintenance" for item in available["items"])
 
 
 def test_toggle_keeps_availability_and_auth_stub_is_documented(vehicle_store):
@@ -187,6 +192,29 @@ def test_toggle_keeps_availability_and_auth_stub_is_documented(vehicle_store):
     assert toggled["showOnWavygo"] is True and toggled["status"] == "Online"
     assert toggled["fleetAvailability"] == before
     assert get_current_tenant() == {"tenant_id": "dev_tenant", "role": "owner"}
+
+
+def test_manual_availability_change_cannot_bypass_open_maintenance_or_rental(vehicle_store):
+    create()
+    vehicle_id = stored_id(vehicle_store)
+    vehicle_store.bookings.documents.append({
+        "_id": ObjectId(), "tenant_id": "dev_tenant", "status": "Ongoing", "vehicle_id": vehicle_id,
+    })
+    with pytest.raises(HTTPException) as maintenance:
+        update(vehicle_id, fleet_availability="Rented")
+    assert maintenance.value.status_code == 409
+
+    vehicle_store.bookings.documents.clear()
+    vehicle_store.bookings.documents.append({
+        "_id": ObjectId(), "tenant_id": "dev_tenant", "status": "Active", "vehicleId": vehicle_id,
+    })
+    with pytest.raises(HTTPException) as rental:
+        update(vehicle_id, fleet_availability="Available")
+    assert rental.value.status_code == 409
+
+    vehicle_store.bookings.documents.clear()
+    updated = update(vehicle_id, fleet_availability="Rented")
+    assert updated["availability"] == updated["fleetAvailability"] == "Rented"
 
 
 def test_update_availability_does_not_change_show_on_wavygo(vehicle_store):

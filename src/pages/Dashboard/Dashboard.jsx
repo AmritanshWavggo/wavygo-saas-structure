@@ -43,7 +43,6 @@ function Dashboard() {
     payments = [],
     customers = [],
     staff = [],
-    updateRecord,
     syncVehicles,
     syncOfflineBookings,
     vehiclesTotal,
@@ -101,19 +100,10 @@ function Dashboard() {
         ),
       )
 
-      // 2. Immediately update in DemoDataContext (Booking -> Completed, Vehicle -> Under Review)
-      if (updateRecord) {
-        updateRecord('bookings', arrival.bookingId, { status: 'Completed', arrival_status: 'Arrived' })
-        const vId = arrival.vehicleId || arrival.vehicle?.id
-        if (vId) {
-          updateRecord('vehicles', vId, { availability: 'Under Review', fleetAvailability: 'Under Review' })
-        }
-      }
-
-      // 3. Inform backend API
+      // 2. Inform backend API. Operational status is always re-read from it.
       await dashboardService.markArrival(arrival.bookingId)
 
-      // 4. Re-sync live data from backend
+      // 3. Re-sync live data from backend
       if (syncVehicles) await syncVehicles({ force: true })
       if (syncOfflineBookings) await syncOfflineBookings()
       const stats = await dashboardService.getStats(dateRange)
@@ -144,8 +134,9 @@ function Dashboard() {
     }
   }, [dateRange, bookings.length, vehicles, payments.length, vehiclesLoading])
 
-  const rentedVehicles = vehicles.filter((v) => v.availability === 'Rented')
-  const availableVehicles = vehicles.filter((v) => v.availability === 'Available')
+  const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
+  const rentedVehicles = vehicles.filter((v) => vehicleState(v) === 'Rented')
+  const availableVehicles = vehicles.filter((v) => vehicleState(v) === 'Available')
   const activeBookings = bookings.filter((b) => b.status === 'Active')
 
   // Calculations with live backend prioritization
@@ -430,7 +421,7 @@ function Dashboard() {
                   <p className="truncate text-xs font-semibold text-slate-800">{vehicle.name}</p>
                   <p className="mt-1 text-[11px] text-slate-400">{vehicle.registration}</p>
                 </div>
-                <StatusBadge status={vehicle.availability} />
+                <StatusBadge status={vehicleState(vehicle)} />
               </div>
             ))}
             {rentedDisplayList.length === 0 && (

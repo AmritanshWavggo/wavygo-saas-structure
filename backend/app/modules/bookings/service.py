@@ -82,9 +82,75 @@ class BookingService:
         doc["pending"] = outstanding
         return doc
 
+    @staticmethod
+    def _dates_overlap(start: str, end: str, other_start: str, other_end: str) -> bool:
+        """Return whether two inclusive ISO-date ranges overlap."""
+        try:
+            return max(date.fromisoformat(start), date.fromisoformat(other_start)) <= min(
+                date.fromisoformat(end), date.fromisoformat(other_end)
+            )
+        except (TypeError, ValueError):
+            # A malformed open-maintenance date must not make the vehicle bookable.
+            return True
+
+    def assert_vehicle_bookable(
+        self,
+        vehicle_id: str,
+        start_date: str,
+        end_date: str,
+        tenant_id: Optional[str],
+        vehicle_name: Optional[str] = None,
+    ) -> None:
+        """Raise 409 when a vehicle is in, or overlaps, open maintenance.
+
+        This is deliberately the single booking-admission check so every booking
+        creation path uses the same maintenance rule.
+        """
+        db = self._get_db()
+        if db is None:
+            return
+
+        vehicle_conditions = [{"id": vehicle_id}, {"_id": vehicle_id}]
+        if vehicle_name:
+            vehicle_conditions.extend([{"makeModel": vehicle_name}, {"name": vehicle_name}])
+        tenant_conditions = [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]
+        vehicle = db["vehicles"].find_one({"$and": [{"$or": vehicle_conditions}, {"$or": tenant_conditions}]})
+        if vehicle and (vehicle.get("availability") == "Maintenance" or vehicle.get("fleetAvailability") == "Maintenance"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Vehicle is under maintenance and cannot be booked.",
+            )
+
+        maintenance_conditions = [{"vehicle_id": vehicle_id}]
+        if vehicle_name:
+            maintenance_conditions.append({"vehicle": vehicle_name})
+        open_maintenance = db["maintenance"].find(
+            {
+                "$and": [
+                    {"$or": tenant_conditions},
+                    {"$or": maintenance_conditions},
+                    {"status": {"$nin": ["Completed", "Cancelled"]}},
+                ]
+            }
+        )
+        for record in open_maintenance:
+            if self._dates_overlap(start_date, end_date, record.get("start"), record.get("expected") or record.get("start")):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Vehicle has overlapping maintenance and cannot be booked.",
+                )
+
     def create_offline_booking(self, payload: OfflineBookingCreate, tenant_id: Optional[str] = None) -> OfflineBookingResponse:
         now_dt = datetime.now(timezone.utc)
         now_str = now_dt.isoformat()
+        db = self._get_db()
+        self.assert_vehicle_bookable(
+            payload.vehicle.vehicle_id,
+            payload.rental.start_date,
+            payload.rental.end_date,
+            tenant_id,
+            payload.vehicle.vehicle_name,
+        )
         
         booking_id = f"BK-{int(time.time() * 1000) % 1000000:06d}"
         customer_id = payload.customer.customer_id or f"CU-{int(time.time() * 1000) % 100000:05d}"
@@ -178,9 +244,6 @@ class BookingService:
             "updated_at": now_str,
         }
         
-        # Save to Mongo if available, else save to memory store
-        db = self._get_db()
-
         # Save to Mongo if available, else save to memory store
         if db is not None:
             try:
@@ -542,6 +605,19 @@ class BookingService:
             refs.append({"_id": ObjectId(vehicle_id)})
         return {"$and": [{"$or": refs}, {"$or": [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
 
+    def _has_open_maintenance(self, db, booking: dict[str, Any], tenant_id: str) -> bool:
+        details = booking.get("vehicle_details") or {}
+        vehicle_id = details.get("id") or booking.get("vehicle")
+        return db["maintenance"].find_one(
+            {
+                "$and": [
+                    {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]},
+                    {"$or": [{"vehicle_id": vehicle_id}, {"vehicle": booking.get("vehicle")}]},
+                    {"status": {"$nin": ["Completed", "Cancelled"]}},
+                ]
+            }
+        ) is not None
+
     @staticmethod
     def _action_time(value: Optional[datetime]) -> datetime:
         action_time = value or datetime.now(timezone.utc)
@@ -575,6 +651,8 @@ class BookingService:
         booking = db["bookings"].find_one(self._tenant_filter(booking_id, tenant_id, "Confirmed"))
         if not booking:
             raise HTTPException(status_code=409, detail="Handover requires a Confirmed booking.")
+        if self._has_open_maintenance(db, booking, tenant_id):
+            raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
         vehicle_id = (booking.get("vehicle_details") or {}).get("id") or booking.get("vehicle")
         other = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"id": {"$ne": booking_id}}, {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": booking.get("vehicle")}]}]})
         if other:
@@ -631,7 +709,8 @@ class BookingService:
         updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, "Active"), update, return_document=ReturnDocument.AFTER)
         if not updated:
             raise HTTPException(status_code=409, detail="Booking is no longer Active; return was not applied.")
-        db["vehicles"].update_one(self._vehicle_filter(booking, tenant_id), {"$set": {"fleetAvailability": "Under Review", "availability": "Under Review", "updatedAt": stamp}})
+        vehicle_state = "Maintenance" if self._has_open_maintenance(db, booking, tenant_id) else "Under Review"
+        db["vehicles"].update_one(self._vehicle_filter(booking, tenant_id), {"$set": {"fleetAvailability": vehicle_state, "availability": vehicle_state, "updatedAt": stamp}})
         if added:
             customer_id = (booking.get("customer_details") or {}).get("id")
             customer_filter: dict[str, Any] = {"name": booking.get("customer"), "$or": [{"tenant_id": tenant_id}, {"tenant_id": ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id}]}
@@ -654,7 +733,8 @@ class BookingService:
         vehicle_id = (updated.get("vehicle_details") or {}).get("id") or updated.get("vehicle")
         holder = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"id": {"$ne": booking_id}}, {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": updated.get("vehicle")}]}]})
         if not holder:
-            db["vehicles"].update_one(vehicle_filter, {"$set": {"fleetAvailability": "Available", "availability": "Available", "updatedAt": stamp}})
+            vehicle_state = "Maintenance" if self._has_open_maintenance(db, updated, tenant_id) else "Available"
+            db["vehicles"].update_one(vehicle_filter, {"$set": {"fleetAvailability": vehicle_state, "availability": vehicle_state, "updatedAt": stamp}})
         return self._response_from_doc(updated)
 
     def cancel_booking(self, booking_id: str, tenant_id: str) -> OfflineBookingResponse:

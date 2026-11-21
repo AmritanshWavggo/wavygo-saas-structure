@@ -92,11 +92,12 @@ const badgeStyles = {
 }
 
 export function StatusBadge({ status }) {
+  const label = status === 'Maintenance' ? 'Under Maintenance' : status
   return (
     <span
       className={`inline-flex whitespace-nowrap rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset ${badgeStyles[status] || 'bg-slate-100 text-slate-600 ring-slate-500/10'}`}
     >
-      {status}
+      {label}
     </span>
   )
 }
