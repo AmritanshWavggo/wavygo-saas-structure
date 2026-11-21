@@ -35,6 +35,7 @@ import { financeService } from '../services/financeService.js'
 import { reportService } from '../services/reportService.js'
 import { staffService } from '../services/staffService.js'
 import { RecordPaymentModal } from '../components/RecordPaymentModal.jsx'
+import { BookingLifecycleDialog } from '../components/BookingLifecycleDialogs.jsx'
 import {
   BarChart,
   Button,
@@ -63,6 +64,10 @@ function PaymentStatusBadge({ status }) {
       {status || 'Unpaid'}
     </span>
   )
+}
+
+function BookingStatusBadge({ status }) {
+  return <StatusBadge status={status === 'Active' ? 'Rented' : status} />
 }
 
 const currency = (amount) =>
@@ -308,11 +313,13 @@ function Customers() {
 }
 
 function Bookings() {
-  const { bookings, updateRecord, syncOfflineBookings, syncPayments } = useDemoData()
+  const { bookings, syncOfflineBookings, syncPayments, syncCustomers, syncVehicles } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
   const [paymentModalBooking, setPaymentModalBooking] = useState(null)
+  const [lifecycleBooking, setLifecycleBooking] = useState(null)
+  const [lifecycleAction, setLifecycleAction] = useState(null)
   const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
@@ -323,7 +330,7 @@ function Bookings() {
   const offline = bookings.filter((item) => item.type === 'Offline').length
   const revenue = bookings.reduce((sum, item) => sum + item.paid, 0)
   const pending = bookings.reduce((sum, item) => sum + item.pending, 0)
-  const tabs = ['All', 'Online', 'Offline', 'Active', 'Completed', 'Cancelled']
+  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Returned', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
     // The shared tab control intentionally matches either booking channel or booking status.
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
@@ -340,6 +347,13 @@ function Bookings() {
     } finally {
       setIsSyncing(false)
     }
+  }
+
+  async function syncLifecycleData() {
+    if (syncOfflineBookings) await syncOfflineBookings()
+    if (syncCustomers) await syncCustomers()
+    if (syncVehicles) await syncVehicles({ force: true })
+    if (syncPayments) await syncPayments()
   }
 
   return (
@@ -392,7 +406,7 @@ function Bookings() {
             { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
             { key: 'dates', label: 'Rental dates' },
             { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            { key: 'status', label: 'Status', render: (row) => <BookingStatusBadge status={row.status} /> },
             {
               key: 'payment_status',
               label: 'Payment',
@@ -417,6 +431,7 @@ function Bookings() {
                 const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
                 const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
                 const canPay = pStatus !== 'Paid' && out > 0 && row.status !== 'Cancelled'
+                const action = row.status === 'Confirmed' ? 'handover' : row.status === 'Active' ? 'return' : row.status === 'Returned' ? 'complete' : null
                 return (
                   <div className="flex gap-1">
                     <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
@@ -425,6 +440,11 @@ function Bookings() {
                     {canPay && (
                       <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => setPaymentModalBooking(row)}>
                         Record payment
+                      </Button>
+                    )}
+                    {action && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => { setLifecycleBooking(row); setLifecycleAction(action) }}>
+                        {action === 'handover' ? 'Mark as Rented / Handover' : action === 'return' ? 'Mark as Returned' : 'Complete Booking'}
                       </Button>
                     )}
                   </div>
@@ -443,6 +463,9 @@ function Bookings() {
           onClose={() => setSelected(null)}
           record={selected}
           rows={[
+            ...(selected.advancePaymentError ? [['Advance payment warning', <span className="text-rose-700">{selected.advancePaymentError} — use Record Payment to retry.</span>]] : []),
+            ['Timeline', <span>Created: {selected.created_at || 'Not recorded'}<br />Handover: {selected.handoverAt || 'Not recorded'}<br />Returned: {selected.returnedAt || 'Not recorded'}<br />Completed: {selected.completedAt || 'Not recorded'}</span>],
+            ['Additional charges', (selected.additionalCharges || []).length ? (selected.additionalCharges || []).map((charge, index) => <span key={index} className="block">{currency(charge.amount)} · {charge.reason} ({charge.type})</span>) : 'None'],
             ...Object.entries(selected).map(([key, value]) => [
               key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
               ['paid', 'pending', 'outstanding', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
@@ -468,11 +491,16 @@ function Bookings() {
           booking={paymentModalBooking}
           onClose={() => setPaymentModalBooking(null)}
           onSuccess={async () => {
-            if (syncOfflineBookings) await syncOfflineBookings()
-            if (syncPayments) await syncPayments()
+            await syncLifecycleData()
           }}
         />
       )}
+      <BookingLifecycleDialog
+        action={lifecycleAction}
+        booking={lifecycleBooking}
+        onClose={() => { setLifecycleAction(null); setLifecycleBooking(null) }}
+        onSuccess={syncLifecycleData}
+      />
     </div>
   )
 }
