@@ -69,6 +69,9 @@ class PaymentRecordCreate(BaseModel):
     amount: float = Field(..., gt=0, description="Payment amount collected in INR")
     method: str = Field("Cash", description="Payment method: Cash, UPI, Card")
     notes: Optional[str] = Field(None, description="Payment note or transaction ID")
+    transaction_reference: Optional[str] = Field(None, description="UPI/UTR/Card reference")
+    idempotency_key: Optional[str] = Field(None, description="Unique client UUID for idempotency")
+    payment_date: Optional[str] = Field(None, description="Payment date")
 
 
 class OfflineBookingResponse(BaseModel):
@@ -80,6 +83,8 @@ class OfflineBookingResponse(BaseModel):
     status: str
     paid: float
     pending: float
+    outstanding: float = 0.0
+    payment_status: str = "Unpaid"
     base_amount: float
     add_on_amount: float
     service_fee: float

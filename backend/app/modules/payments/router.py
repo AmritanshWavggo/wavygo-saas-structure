@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from typing import List, Optional, Annotated, Any
+from fastapi import APIRouter, HTTPException, Query, Request, Response, Depends, status
 
-from app.modules.auth.security import get_optional_vendor
+from app.modules.auth.security import get_optional_vendor, get_current_vendor
 from app.modules.payments.schemas import (
     PaymentCreate,
     PaymentUpdate,
@@ -37,15 +37,16 @@ def _get_tenant_id(request: Request) -> Optional[str]:
     summary="Record payment transaction",
     description="Record a cash, UPI, or card payment against a booking, updating both the payment ledger and booking balance.",
 )
-def record_payment(payload: PaymentCreate, request: Request) -> PaymentResponse:
-    try:
-        tenant_id = _get_tenant_id(request)
-        return payment_service.record_payment(payload, tenant_id=tenant_id)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Failed to record payment: {str(exc)}",
-        )
+def record_payment(
+    payload: PaymentCreate,
+    response: Response,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> PaymentResponse:
+    tenant_id = str(vendor["_id"])
+    result, is_replay = payment_service.record_payment_with_replay(payload, tenant_id=tenant_id)
+    if is_replay:
+        response.status_code = status.HTTP_200_OK
+    return result
 
 
 @router.get(
@@ -125,7 +126,8 @@ def update_payment(payment_id: str, payload: PaymentUpdate, request: Request) ->
     summary="Refund payment",
 )
 def refund_payment(payment_id: str, request: Request, reason: Optional[str] = Query(None)) -> PaymentResponse:
-    res = payment_service.refund_payment(payment_id, reason=reason)
+    tenant_id = _get_tenant_id(request)
+    res = payment_service.refund_payment(payment_id, reason=reason, tenant_id=tenant_id)
     if not res:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
