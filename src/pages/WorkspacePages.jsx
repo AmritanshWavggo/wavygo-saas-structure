@@ -40,6 +40,8 @@ import {
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
 
+const isAdminRole = (role) => String(role || '').trim().toLowerCase() === 'admin'
+
 function nextId(prefix, records) {
   // Continue the largest existing numeric suffix so inserted demo rows receive unique IDs.
   const max = records.reduce((largest, record) => {
@@ -49,9 +51,10 @@ function nextId(prefix, records) {
   return `${prefix}-${max + 1}`
 }
 
-function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo', showDemoNote = true }) {
-  const initialValues = Object.fromEntries(fields.map((field) => [field.name, field.initial || '']))
-  const [values, setValues] = useState(initialValues)
+function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo', showDemoNote = true, initialValues = {}, externalError = '' }) {
+  const [values, setValues] = useState(() => Object.fromEntries(
+    fields.map((field) => [field.name, initialValues[field.name] ?? field.initial ?? '']),
+  ))
   const [error, setError] = useState('')
 
   function submit(event) {
@@ -122,7 +125,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo'
             </label>
           ))}
         </div>
-        {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
+        {(error || externalError) && <p role="alert" className="text-xs text-rose-600">{error || externalError}</p>}
         {showDemoNote && (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
             Demo only. This record is held in page state and is not sent to a server.
@@ -150,12 +153,40 @@ function DetailDialog({ title, rows, onClose, showDemoNote = true }) {
 }
 
 function Customers() {
-  const { customers, addRecord } = useDemoData()
+  const { customers, addRecord, updateCustomerDetails, customerEditHistory = [], currentDemoUser, payments = [], bookings = [], paymentAdjustments = [], addPaymentAdjustment } = useDemoData()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All')
   const [searchParams] = useSearchParams()
   const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
   const [selected, setSelected] = useState(null)
+  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [editError, setEditError] = useState('')
+  const [customerPaymentForm, setCustomerPaymentForm] = useState(null)
+  const [paymentError, setPaymentError] = useState('')
+  const isAdmin = isAdminRole(currentDemoUser?.role)
+
+  const previousCustomerNames = selected ? customerEditHistory.filter((entry) => entry.customerId === selected.id).flatMap((entry) => entry.changes?.name ? [entry.changes.name.before] : []) : []
+  const customerNames = selected ? new Set([selected.name, ...previousCustomerNames].filter(Boolean)) : new Set()
+  const customerPayments = selected ? payments.filter((payment) => customerNames.has(payment.customer)) : []
+  const effectivePaymentAmount = (payment) => Number(payment.amount || 0) + paymentAdjustments.filter((item) => item.paymentId === payment.id).reduce((sum, item) => sum + Number(item.difference || 0), 0)
+
+  function saveCustomerPaymentCorrection(values) {
+    if (!isAdmin) { setPaymentError('Only the Admin demo role can correct payment records.'); return }
+    const payment = customerPaymentForm
+    const booking = bookings.find((item) => item.id === payment?.booking)
+    if (!payment || !booking) { setPaymentError('The linked booking could not be found.'); return }
+    const amount = Number(values.correctedAmount)
+    if (!Number.isFinite(amount) || amount < 0) { setPaymentError('Enter a valid amount of zero or more.'); return }
+    if (!String(values.reason || '').trim()) { setPaymentError('A correction reason is required.'); return }
+    const difference = amount - effectivePaymentAmount(payment)
+    if (difference > Number(booking.pending || 0)) { setPaymentError(`The increase cannot exceed the booking pending balance (${currency(booking.pending)}).`); return }
+    if (Number(booking.paid || 0) + difference < 0) { setPaymentError('The correction cannot make the booking paid amount negative.'); return }
+    const result = addPaymentAdjustment({ paymentId: payment.id, bookingId: payment.booking, correctedAmount: amount, reason: values.reason.trim(), actor: currentDemoUser })
+    if (!result?.success) { setPaymentError(result?.error || 'Unable to save correction.'); return }
+    setSelected((current) => current ? { ...current, paid: Number(current.paid || 0) + difference, pending: Number(current.pending || 0) - difference } : current)
+    setCustomerPaymentForm(null)
+    setPaymentError('')
+  }
 
   const filtered = customers.filter((customer) =>
     `${customer.name} ${customer.phone} ${customer.email} ${customer.id}`.toLowerCase().includes(query.toLowerCase())
@@ -191,7 +222,7 @@ function Customers() {
             { key: 'paid', label: 'Total paid', render: (row) => currency(row.paid) },
             { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
             { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            { key: 'view', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}><Eye size={15} />View</Button> },
+            { key: 'actions', label: 'Actions', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button><Button variant="secondary" className="min-h-8 px-2" onClick={() => { setEditError(''); setEditingCustomer(row) }}>Edit</Button></div> },
           ]}
         />
         <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} demo customers</p>
@@ -212,17 +243,110 @@ function Customers() {
           }}
         />
       )}
-      {selected && (
-        <DetailDialog
-          title={selected.name}
-          record={selected}
-          onClose={() => setSelected(null)}
-          rows={[
-            ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
-            ['Profile status', selected.status], ['Total bookings', selected.bookings],
-            ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
-            ['Pending amount', currency(selected.pending)],
+      {editingCustomer && (
+        <RecordForm
+          key={editingCustomer.id}
+          title={`Edit customer · ${editingCustomer.id}`}
+          onClose={() => { setEditingCustomer(null); setEditError('') }}
+          initialValues={{
+            name: editingCustomer.name,
+            phone: editingCustomer.phone,
+            email: editingCustomer.email,
+            status: editingCustomer.status,
+          }}
+          fields={[
+            { name: 'name', label: 'Full name', required: true },
+            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
+            { name: 'email', label: 'Email address', type: 'email' },
+            { name: 'status', label: 'Profile status', type: 'select', options: ['Review', 'Verified'], required: true },
+            { name: 'reason', label: 'Reason for editing', required: true, wide: true, placeholder: 'Explain why these customer details are being changed' },
           ]}
+          onSave={(values) => {
+            const { reason, ...changes } = values
+            const result = updateCustomerDetails({
+              customerId: editingCustomer.id,
+              changes,
+              reason,
+              actor: currentDemoUser,
+            })
+            if (!result?.success) {
+              setEditError(result?.error || 'Unable to update this customer.')
+              return
+            }
+            setSelected((current) => current?.id === editingCustomer.id ? result.customer : current)
+            setEditingCustomer(null)
+            setEditError('')
+          }}
+          externalError={editError}
+          saveLabel="Save changes"
+        />
+      )}
+      {selected && (
+        <Modal title={selected.name} onClose={() => setSelected(null)}>
+          <div className="space-y-3">
+            {[
+              ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
+              ['Profile status', selected.status], ['Total bookings', selected.bookings],
+              ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
+              ['Pending amount', currency(selected.pending)],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
+                <span className="text-xs text-slate-500">{label}</span>
+                <span className="text-right text-xs font-medium text-slate-800">{value || '—'}</span>
+              </div>
+            ))}
+            <div className="border-t border-slate-200 pt-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">Payment history</h3>
+                <span className="text-[10px] text-slate-400">{customerPayments.length} transaction(s)</span>
+              </div>
+              {customerPayments.length ? customerPayments.map((payment) => {
+                const corrections = paymentAdjustments.filter((item) => item.paymentId === payment.id)
+                return (
+                  <div key={payment.id} className="mb-2 rounded-xl border border-slate-200 p-3 last:mb-0">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-800">{payment.id} · {payment.booking}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{payment.date} · {payment.method} · {payment.status}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-semibold text-slate-900">{currency(effectivePaymentAmount(payment))}</p>
+                        <p className="text-[10px] text-slate-400">Original: {currency(payment.amount)}</p>
+                      </div>
+                    </div>
+                    {corrections.map((entry, index) => (
+                      <div key={entry.id} className="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-600">
+                        Correction {index + 1}: {currency(entry.previousAmount)} → {currency(entry.correctedAmount)} · {entry.reason}<br />
+                        By {entry.correctedBy} ({entry.correctedByRole}) · {new Date(entry.correctedAt).toLocaleString()}
+                      </div>
+                    ))}
+                    {isAdmin && <div className="mt-2 flex justify-end"><Button variant="secondary" className="min-h-8 px-2.5" onClick={() => { setPaymentError(''); setCustomerPaymentForm(payment) }}>Edit payment</Button></div>}
+                  </div>
+                )
+              }) : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No payment transactions are linked to this customer in the current demo data.</p>}
+              {!isAdmin && <p className="mt-2 text-[10px] text-slate-400">Payment corrections are available to the Admin demo role only.</p>}
+            </div>
+            {customerEditHistory.filter((entry) => entry.customerId === selected.id).map((entry, index) => (
+              <div key={entry.id} className="rounded-lg bg-slate-50 p-2.5 text-[10px] leading-4 text-slate-600">
+                Customer edit {index + 1}: {entry.reason} · {entry.actorName} ({entry.actorRole}) · {new Date(entry.createdAt).toLocaleString()}
+              </div>
+            ))}
+            <p className="pt-1 text-[10px] text-slate-400">Sample workspace details · Demo data only</p>
+          </div>
+        </Modal>
+      )}
+      {customerPaymentForm && isAdmin && (
+        <RecordForm
+          title={`Correct payment · ${customerPaymentForm.id}`}
+          onClose={() => { setCustomerPaymentForm(null); setPaymentError('') }}
+          initialValues={{ correctedAmount: String(effectivePaymentAmount(customerPaymentForm)) }}
+          fields={[
+            { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
+            { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this payment is being corrected' },
+          ]}
+          onSave={saveCustomerPaymentCorrection}
+          externalError={paymentError}
+          saveLabel="Save correction"
         />
       )}
     </div>
@@ -230,126 +354,198 @@ function Customers() {
 }
 
 function Bookings() {
-  const { bookings, updateRecord } = useDemoData()
+  const { bookings, vehicles, customers, currentDemoUser, updateRecord, createDemoBooking, cancelDemoBooking, cancellationHistory = [], refundAdjustments = [] } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
   const [paymentForm, setPaymentForm] = useState(null)
+  const [showBookingForm, setShowBookingForm] = useState(false)
+  const [cancelForm, setCancelForm] = useState(null)
+  const [formError, setFormError] = useState('')
   const online = bookings.filter((item) => item.type === 'Online').length
   const offline = bookings.filter((item) => item.type === 'Offline').length
-  const revenue = bookings.reduce((sum, item) => sum + item.paid, 0)
-  const pending = bookings.reduce((sum, item) => sum + item.pending, 0)
-  const tabs = ['All', 'Online', 'Offline', 'Active', 'Completed', 'Cancelled']
+  const revenue = bookings.reduce((sum, item) => sum + Number(item.paid || 0), 0)
+  const pending = bookings.reduce((sum, item) => sum + Number(item.pending || 0), 0)
+  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
-    // The shared tab control intentionally matches either booking channel or booking status.
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
-    const tabMatch = tab === 'All' || booking.type === tab || booking.status === tab
-    return termMatch && tabMatch
+    return termMatch && (tab === 'All' || booking.type === tab || booking.status === tab)
   })
+  const vehicleOptions = vehicles.filter((item) => item.status === 'Online' && item.availability !== 'Maintenance').map((item) => ({ value: item.id, label: `${item.name} · ${currency(item.price)}/day` }))
+  const customerOptions = customers.map((item) => ({ value: item.id, label: item.name }))
+
+  function saveBooking(values) {
+    const result = createDemoBooking({ ...values, type: 'Offline', actor: currentDemoUser })
+    if (!result?.success) { setFormError(result?.error || 'Booking could not be created.'); return }
+    setShowBookingForm(false)
+    setFormError('')
+    setSelected(result.booking)
+  }
+
+  function saveCancellation(values) {
+    const result = cancelDemoBooking({ bookingId: cancelForm.id, reason: values.reason, refundAmount: values.refundAmount, actor: currentDemoUser })
+    if (!result?.success) { setFormError(result?.error || 'Cancellation could not be completed.'); return }
+    setCancelForm(null)
+    setFormError('')
+    setSelected(null)
+  }
 
   return (
     <div>
-      <PageHeader
-        title="Bookings"
-        description="Track online and in-store rentals, upcoming handovers and payments."
-        action={<Link to="/app/bookings/new"><Button><Plus size={16} />Offline booking</Button></Link>}
-      />
+      <PageHeader title="Bookings" description="Check vehicle availability, prevent overlapping rentals and manage cancellations." action={<Button onClick={() => { setFormError(''); setShowBookingForm(true) }}><Plus size={16} />Offline booking</Button>} />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard label="Total bookings" value={bookings.length} caption="Sample records" icon={ClipboardList} />
         <MetricCard label="Online bookings" value={online} icon={ArrowUpRight} tone="blue" />
         <MetricCard label="Offline bookings" value={offline} icon={CalendarDays} tone="violet" />
-        <MetricCard label="Revenue · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Paid · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
       </div>
       <Card className="overflow-hidden">
         <Tabs items={tabs.map((label) => ({ label, value: label, count: label === 'All' ? bookings.length : undefined }))} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search ID, customer or vehicle…" /></div>
-        <DataTable
-          rows={filtered}
-          columns={[
-            { key: 'id', label: 'Booking ID', render: (row) => <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">{row.id}</button> },
-            { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
-            { key: 'dates', label: 'Rental dates' },
-            { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) },
-            { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
-            { key: 'actions', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}><Eye size={15} /></Button>{row.pending > 0 && <Button variant="quiet" className="min-h-8 px-2" onClick={() => setPaymentForm(row)}>Update payment</Button>}</div> },
-          ]}
-        />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">Demo booking records · {filtered.length} shown</p>
+        <DataTable rows={filtered} columns={[
+          { key: 'id', label: 'Booking ID', render: (row) => <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">{row.id}</button> },
+          { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
+          { key: 'dates', label: 'Rental dates', render: (row) => <span className="text-xs">{row.dates}{row.startAt && <span className="mt-1 block text-[10px] text-slate-400">{new Date(row.startAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – {new Date(row.endAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</span> },
+          { key: 'type', label: 'Type' }, { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+          { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) }, { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
+          { key: 'actions', label: 'Actions', render: (row) => <div className="flex flex-wrap gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button>{row.pending > 0 && ['Confirmed','Active'].includes(row.status) && <Button variant="quiet" className="min-h-8 px-2" onClick={() => setPaymentForm(row)}>Update payment</Button>}{['Confirmed','Active'].includes(row.status) && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCancelForm(row) }}>Cancel</Button>}</div> },
+        ]} />
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">Demo booking records · {filtered.length} shown · Overlap checks run against demo booking dates and times</p>
       </Card>
-      {selected && <DetailDialog title={`Booking ${selected.id}`} onClose={() => setSelected(null)} record={selected} rows={Object.entries(selected).map(([key, value]) => [key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()), ['paid', 'pending'].includes(key) ? currency(value) : value])} />}
-      {paymentForm && (
-        <RecordForm
-          title={`Record payment · ${paymentForm.id}`}
-          onClose={() => setPaymentForm(null)}
-          fields={[{ name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true }]}
-          onSave={(values) => {
-            // A partial-payment entry cannot exceed the booking's remaining balance.
-            const amount = Math.min(Number(values.amount), paymentForm.pending)
-            updateRecord('bookings', paymentForm.id, { paid: paymentForm.paid + amount, pending: paymentForm.pending - amount })
-            setPaymentForm(null)
-          }}
-          saveLabel="Record in demo"
-        />
-      )}
+      {showBookingForm && <RecordForm title="Create offline booking" onClose={() => { setShowBookingForm(false); setFormError('') }} fields={[
+        { name: 'customerId', label: 'Customer', type: 'select', options: customerOptions, required: true },
+        { name: 'vehicleId', label: 'Vehicle', type: 'select', options: vehicleOptions, required: true },
+        { name: 'startAt', label: 'Start date & time', type: 'datetime-local', required: true },
+        { name: 'endAt', label: 'End date & time', type: 'datetime-local', required: true },
+        { name: 'paid', label: 'Amount paid (₹)', type: 'number', min: 0, initial: '0' },
+      ]} onSave={saveBooking} externalError={formError} saveLabel="Check availability & create" />}
+      {cancelForm && <RecordForm title={`Cancel booking · ${cancelForm.id}`} onClose={() => { setCancelForm(null); setFormError('') }} initialValues={{ refundAmount: String(cancelForm.paid || 0) }} fields={[
+        { name: 'reason', label: 'Cancellation reason', required: true, wide: true, placeholder: 'Enter why this booking is being cancelled' },
+        { name: 'refundAmount', label: `Refund amount (₹) · max ${currency(cancelForm.paid)}`, type: 'number', min: 0, step: '0.01', required: true },
+      ]} onSave={saveCancellation} externalError={formError} saveLabel="Confirm cancellation" />}
+      {selected && <Modal title={`Booking ${selected.id}`} onClose={() => setSelected(null)}>
+        <div className="space-y-3">
+          {Object.entries(selected).filter(([key]) => !['customerId','vehicleId'].includes(key)).map(([key,value]) => <div key={key} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5"><span className="text-xs text-slate-500">{key.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase())}</span><span className="max-w-[65%] text-right text-xs font-medium text-slate-800">{['paid','pending','totalAmount','refundedAmount'].includes(key) ? currency(value) : String(value ?? '—')}</span></div>)}
+          {cancellationHistory.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-xl bg-rose-50 p-3 text-xs leading-5 text-rose-900"><strong>Cancellation history</strong><p>Reason: {entry.reason}</p><p>By: {entry.cancelledBy} ({entry.cancelledByRole})</p><p>At: {new Date(entry.cancelledAt).toLocaleString()}</p><p>Refund: {currency(entry.refundAmount)} · {entry.refundStatus}</p></div>)}
+          {refundAdjustments.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Refund {currency(entry.amount)} · {entry.status}</div>)}
+          <p className="pt-1 text-[10px] text-slate-400">Demo only. No actual payment or refund is processed.</p>
+        </div>
+      </Modal>}
+      {paymentForm && <RecordForm title={`Record payment · ${paymentForm.id}`} onClose={() => setPaymentForm(null)} fields={[{ name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true }]} onSave={(values) => { const amount = Math.min(Number(values.amount), paymentForm.pending); updateRecord('bookings', paymentForm.id, { paid: paymentForm.paid + amount, pending: paymentForm.pending - amount }); setPaymentForm(null) }} saveLabel="Record in demo" />}
     </div>
   )
 }
 
 function Payments() {
-  const { payments } = useDemoData()
+  const { payments, paymentAdjustments = [], refundAdjustments = [], bookings, addPaymentAdjustment, currentDemoUser } = useDemoData()
+  const isAdmin = isAdminRole(currentDemoUser?.role)
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [dateRange, setDateRange] = useState('This month')
   const [selected, setSelected] = useState(null)
-  const revenue = payments.reduce((sum, payment) => sum + payment.amount, 0)
+  const [correctionForm, setCorrectionForm] = useState(null)
+  const [formError, setFormError] = useState('')
+
+  const adjustmentTotal = (paymentId) => paymentAdjustments
+    .filter((item) => item.paymentId === paymentId)
+    .reduce((sum, item) => sum + Number(item.difference || 0), 0)
+  const effectiveAmount = (payment) => Number(payment.amount || 0) + adjustmentTotal(payment.id)
+  const revenue = payments.reduce((sum, payment) => sum + effectiveAmount(payment), 0) - refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const pendingRefundTotal = refundAdjustments.filter((item) => item.status === 'Refund pending (demo)').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const filtered = payments.filter((payment) =>
     `${payment.id} ${payment.booking} ${payment.customer} ${payment.method}`.toLowerCase().includes(query.toLowerCase())
-    && (tab === 'All' || payment.status === tab),
+    && (tab === 'All' || (tab === 'Adjusted' ? paymentAdjustments.some((item) => item.paymentId === payment.id) : payment.status === tab)),
   ).filter((payment) => dateRange === 'All time' || payment.date.includes('Oct 2026'))
+
+  function saveCorrection(values) {
+    const correctedAmount = Number(values.correctedAmount)
+    const currentAmount = effectiveAmount(correctionForm)
+    const difference = correctedAmount - currentAmount
+    const booking = bookings.find((item) => item.id === correctionForm.booking)
+    if (!Number.isFinite(correctedAmount) || correctedAmount < 0) {
+      setFormError('Enter a valid corrected amount of zero or more.')
+      return
+    }
+    if (!String(values.reason || '').trim()) {
+      setFormError('A correction reason is required.')
+      return
+    }
+    if (!booking) {
+      setFormError('The linked booking could not be found. No correction was saved.')
+      return
+    }
+    if (difference > Number(booking.pending || 0)) {
+      setFormError(`The increase cannot exceed the booking's pending balance (${currency(booking.pending)}).`)
+      return
+    }
+    if (Number(booking.paid || 0) + difference < 0) {
+      setFormError('The correction cannot make the booking paid amount negative.')
+      return
+    }
+    const result = addPaymentAdjustment({
+      paymentId: correctionForm.id,
+      bookingId: correctionForm.booking,
+      correctedAmount,
+      reason: values.reason.trim(),
+      actor: currentDemoUser,
+    })
+    if (!result?.success) {
+      setFormError(result?.error || 'The payment correction could not be saved.')
+      return
+    }
+    setCorrectionForm(null)
+    setFormError('')
+  }
 
   return (
     <div>
-      <PageHeader title="Payments & finance" description="A clear picture of collections and outstanding payments. This demo does not process real transactions." action={<div className="flex flex-wrap gap-2"><FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial']} /><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>} />
+      <PageHeader title="Payments & finance" description="Review transactions and record traceable corrections. This demo does not process refunds or charge cards." action={<div className="flex flex-wrap gap-2"><FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial', 'Adjusted']} /><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>} />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Collected · demo" value={currency(revenue)} caption="From sample transactions" icon={BadgeIndianRupee} />
+        <MetricCard label="Collected · adjusted" value={currency(revenue)} caption="Original transactions plus corrections" icon={BadgeIndianRupee} />
         <MetricCard label="Online bookings" value={currency(248900)} caption="Illustrative month total" icon={ArrowUpRight} tone="blue" />
         <MetricCard label="Offline revenue" value={currency(105900)} caption="Illustrative month total" icon={Wallet} tone="violet" />
-        <MetricCard label="Pending payments" value={currency(18450)} caption="Sample outstanding balance" icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Pending refunds" value={currency(pendingRefundTotal)} caption={`${refundAdjustments.length} demo refund record(s)`} icon={CircleDollarSign} tone="amber" />
       </div>
       <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.8fr)]">
         <Card className="p-5 sm:p-6">
-          <div className="flex flex-wrap justify-between gap-3">
-            <div><h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2><p className="mt-1 text-xs text-slate-500">Illustrative monthly summary · ₹</p></div>
-            <FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} />
-          </div>
+          <div className="flex flex-wrap justify-between gap-3"><div><h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2><p className="mt-1 text-xs text-slate-500">Illustrative monthly summary · ₹</p></div><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>
           <div className="mt-4"><ComparisonChart data={[{ label: 'May', revenue: 18, expenses: 9 }, { label: 'Jun', revenue: 22, expenses: 12 }, { label: 'Jul', revenue: 19, expenses: 11 }, { label: 'Aug', revenue: 26, expenses: 14 }, { label: 'Sep', revenue: 31, expenses: 16 }, { label: 'Oct', revenue: 35, expenses: 18 }]} /></div>
         </Card>
-        <Card className="p-5 sm:p-6">
-          <h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2>
-          <p className="mt-1 text-xs text-slate-500">Illustrative totals for October</p>
-          <div className="mt-4 space-y-3">
-            {[
-              ['Current balance', '₹2,84,450', 'text-emerald-700'],
-              ['Operating expenses', '₹72,800', 'text-slate-800'],
-              ['Maintenance costs', '₹18,450', 'text-slate-800'],
-              ['Estimated net', '₹2,11,650', 'text-emerald-700'],
-            ].map(([label, amount, tone]) => <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0"><span className="text-slate-500">{label}</span><span className={`font-semibold ${tone}`}>{amount}</span></div>)}
-          </div>
-        </Card>
+        <Card className="p-5 sm:p-6"><h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2><p className="mt-1 text-xs text-slate-500">Illustrative totals for October</p><div className="mt-4 space-y-3">{[['Current balance', '₹2,84,450', 'text-emerald-700'], ['Operating expenses', '₹72,800', 'text-slate-800'], ['Maintenance costs', '₹18,450', 'text-slate-800'], ['Estimated net', '₹2,11,650', 'text-emerald-700']].map(([label, amount, tone]) => <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0"><span className="text-slate-500">{label}</span><span className={`font-semibold ${tone}`}>{amount}</span></div>)}</div></Card>
       </div>
       <Card className="overflow-hidden">
-        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2><p className="mt-1 text-xs text-slate-500">Sample records only · no payment gateway connected</p></div><SearchField value={query} onChange={setQuery} placeholder="Search transactions…" /></div>
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2><p className="mt-1 text-xs text-slate-500">Original transaction amounts remain unchanged; corrections are stored separately.</p></div><SearchField value={query} onChange={setQuery} placeholder="Search transactions…" /></div>
         <DataTable rows={filtered} columns={[
           { key: 'id', label: 'Transaction', render: (row) => <span className="font-semibold text-slate-800">{row.id}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span></span> },
           { key: 'customer', label: 'Customer' }, { key: 'method', label: 'Method' }, { key: 'date', label: 'Date' },
-          { key: 'amount', label: 'Amount', render: (row) => currency(row.amount) },
-          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'view', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}><Eye size={15} />Details</Button> },
+          { key: 'amount', label: 'Original / effective', render: (row) => <span>{currency(row.amount)}<span className="mt-1 block text-[11px] text-slate-500">Effective: {currency(effectiveAmount(row))}</span></span> },
+          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.refundStatus || (paymentAdjustments.some((item) => item.paymentId === row.id) ? 'Adjusted' : row.status)} /> },
+          { key: 'actions', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}>Details</Button>{isAdmin && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCorrectionForm(row) }}>Correct</Button>}</div> },
         ]} />
       </Card>
-      {selected && <DetailDialog title={`Transaction ${selected.id}`} record={selected} onClose={() => setSelected(null)} rows={Object.entries(selected).map(([key, value]) => [key, key === 'amount' ? currency(value) : value])} />}
+      {selected && <DetailDialog title={`Transaction ${selected.id}`} onClose={() => setSelected(null)} rows={[
+        ['Transaction ID', selected.id], ['Booking', selected.booking], ['Customer', selected.customer], ['Method', selected.method], ['Date', selected.date],
+        ['Original amount', currency(selected.amount)], ['Effective amount', currency(effectiveAmount(selected))], ['Original status', selected.status], ['Refund status', selected.refundStatus || 'No refund recorded'],
+        ...paymentAdjustments.filter((item) => item.paymentId === selected.id).flatMap((item, index) => [
+          [`Correction ${index + 1} · amount`, `${currency(item.difference)} (${currency(item.correctedAmount)} corrected total)`],
+          [`Correction ${index + 1} · reason`, item.reason],
+          [`Correction ${index + 1} · corrected by`, `${item.correctedBy || 'Demo Admin'} (${item.correctedByRole || 'Admin'})`],
+          [`Correction ${index + 1} · date`, new Date(item.correctedAt).toLocaleString()],
+        ]),
+      ]} />}
+      {correctionForm && isAdmin && <RecordForm
+        title={`Correct transaction · ${correctionForm.id}`}
+        onClose={() => { setCorrectionForm(null); setFormError('') }}
+        initialValues={{ correctedAmount: String(effectiveAmount(correctionForm)) }}
+        fields={[
+          { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
+          { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this transaction needs correction' },
+        ]}
+        onSave={saveCorrection}
+        externalError={formError}
+        saveLabel="Save correction"
+      />}
+      <p className="mt-3 text-[11px] text-slate-400">Demo only: correction records are kept in memory for this app session. No payment gateway, refund, or real money movement occurs.</p>
     </div>
   )
 }
@@ -596,8 +792,16 @@ const reportSeries = {
 }
 
 function Reports() {
-  const { vehicles, bookings, customers, payments } = useDemoData()
+  const { vehicles, bookings, customers, payments, paymentAdjustments = [], refundAdjustments = [], cancellationHistory = [] } = useDemoData()
   const [tab, setTab] = useState('Overview')
+  const effectivePaymentRevenue = payments.reduce((sum, payment) => {
+    const corrections = paymentAdjustments
+      .filter((adjustment) => adjustment.paymentId === payment.id)
+      .reduce((total, adjustment) => total + Number(adjustment.difference || 0), 0)
+    return sum + Number(payment.amount || 0) + corrections
+  }, 0)
+  const totalRefunds = refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const netPaymentRevenue = effectivePaymentRevenue - totalRefunds
   const sections = Object.keys(reportSeries)
   const data = reportSeries[tab].map((value, index) => ({ label: ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'][index], value }))
 
@@ -620,7 +824,7 @@ function Reports() {
     <div>
       <PageHeader title="Reports" description="Explore sample trends across your rental business." action={<div className="flex gap-2"><FilterSelect value="Last 6 months" onChange={() => {}} options={['Last 6 months', 'This month', 'Last 30 days']} /><Button variant="secondary" onClick={exportCsv}><ArrowDownToLine size={16} />Export bookings CSV</Button></div>} />
       <div className="mb-5 flex flex-wrap gap-2">
-        {[['Revenue', '₹3,54,800'], ['Bookings', bookings.length], ['Vehicle utilization', '74%'], ['Customers', customers.length]].map(([label, value]) => <Card key={label} className="min-w-36 flex-1 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{value}</p></Card>)}
+        {[['Net payment revenue', currency(netPaymentRevenue)], ['Bookings', bookings.length], ['Vehicle utilization', '74%'], ['Customers', customers.length]].map(([label, value]) => <Card key={label} className="min-w-36 flex-1 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{value}</p></Card>)}
       </div>
       <Card className="overflow-hidden">
         <Tabs items={sections} value={tab} onChange={setTab} />
@@ -631,7 +835,7 @@ function Reports() {
       </Card>
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <Card className="overflow-hidden"><div className="p-5"><h2 className="text-sm font-semibold text-slate-900">Top vehicles by bookings</h2><p className="mt-1 text-xs text-slate-500">Based on these illustrative sample records</p></div><DataTable rows={vehicles.slice(0, 4).map((vehicle, index) => ({ ...vehicle, reportBookings: [28, 23, 19, 15][index] }))} columns={[{ key: 'name', label: 'Vehicle' }, { key: 'registration', label: 'Registration' }, { key: 'type', label: 'Type' }, { key: 'reportBookings', label: 'Bookings', render: (row) => <span className="font-semibold text-slate-800">{row.reportBookings}</span> }]} /></Card>
-        <Card className="p-5"><h2 className="text-sm font-semibold text-slate-900">Recent report notes</h2><div className="mt-4 space-y-3 text-xs"><p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">Sample payments currently total {currency(payments.reduce((sum, item) => sum + item.amount, 0))}.</p><p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">The current demo dataset contains {bookings.length} booking records and {customers.length} customer profiles.</p></div></Card>
+        <Card className="p-5"><h2 className="text-sm font-semibold text-slate-900">Recent report notes</h2><div className="mt-4 space-y-3 text-xs"><p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">Net payment total: {currency(netPaymentRevenue)} after {refundAdjustments.length} demo refund adjustment(s). {paymentAdjustments.length} payment correction(s) are recorded separately; original transactions remain unchanged.</p><p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">The current demo dataset contains {bookings.length} booking records, {customers.length} customer profiles and {cancellationHistory.length} cancellation record(s). Refunds remain marked pending in the demo and are not actually processed.</p></div></Card>
       </div>
     </div>
   )
