@@ -33,6 +33,7 @@ class DocumentResponse(BaseModel):
     vehicle_name: Optional[str] = None
     file_url: str = Field(..., description="Cloudinary CDN secure URL")
     public_id: Optional[str] = Field(None, description="Cloudinary asset public ID")
+    resource_type: Optional[str] = None
     file_name: Optional[str] = None
     file_size: Optional[int] = None
     format: Optional[str] = None

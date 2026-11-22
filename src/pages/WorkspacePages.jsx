@@ -34,6 +34,7 @@ import { paymentService } from '../services/paymentService.js'
 import { financeService } from '../services/financeService.js'
 import { reportService } from '../services/reportService.js'
 import { staffService } from '../services/staffService.js'
+import { vehicleService } from '../services/vehicleService.js'
 import {
   BarChart,
   Button,
@@ -1307,13 +1308,18 @@ function Payments() {
 }
 
 function Documents() {
-  const { documents = [], addRecord, syncDocuments, vehicles = [] } = useDemoData()
+  const { documents = [], addRecord, updateRecord, syncDocuments, syncVehicles, vehicles = [] } = useDemoData()
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
+  const [replacementTarget, setReplacementTarget] = useState(null)
+  const [replacementFile, setReplacementFile] = useState(null)
+  const [replacementError, setReplacementError] = useState('')
+  const [isReplacing, setIsReplacing] = useState(false)
+  const [documentNotice, setDocumentNotice] = useState('')
 
   // Upload modal form state
   const [formName, setFormName] = useState('')
@@ -1342,6 +1348,9 @@ function Documents() {
                 vehicle_name: v.name,
                 file_url: url,
                 url: url,
+                isVehicleAttachment: true,
+                vehicle_document_public_id: typeof vd === 'object' ? (vd.publicId || vd.public_id) : null,
+                vehicle_document_type: typeof vd === 'object' ? (vd.type || 'Other') : 'Other',
                 status: 'Verified',
                 date: v.createdAt ? new Date(v.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
                 backendSynced: true,
@@ -1440,6 +1449,85 @@ function Documents() {
     }
   }
 
+  function openReplacement(doc) {
+    setReplacementTarget(doc)
+    setReplacementFile(null)
+    setReplacementError('')
+  }
+
+  function handleReplacementFileChange(event) {
+    const file = event.target.files?.[0] || null
+    event.target.value = ''
+    setReplacementFile(file)
+    if (!file) return
+
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    const allowedTypes = {
+      pdf: 'application/pdf',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      webp: 'image/webp',
+    }
+    if (!allowedTypes[extension] || (file.type && file.type !== allowedTypes[extension])) {
+      setReplacementError('Choose a PDF, PNG, JPG, JPEG, or WEBP file.')
+    } else if (file.size > 10 * 1024 * 1024) {
+      setReplacementError('Documents must be 10 MB or smaller.')
+    } else {
+      setReplacementError('')
+    }
+  }
+
+  async function handleReplaceDocument(event) {
+    event.preventDefault()
+    if (isReplacing) return
+    if (!replacementTarget) {
+      setReplacementError('Select a document to replace.')
+      return
+    }
+    if (!replacementFile) {
+      setReplacementError('Please select a replacement file.')
+      return
+    }
+    if (replacementError) return
+    if (replacementTarget.isVehicleAttachment && !replacementTarget.vehicle_document_public_id) {
+      setReplacementError('This vehicle document has no storage ID and cannot be safely replaced.')
+      return
+    }
+
+    setIsReplacing(true)
+    setReplacementError('')
+    try {
+      if (replacementTarget.isVehicleAttachment) {
+        const formData = new FormData()
+        formData.append('new_documents', replacementFile)
+        formData.append('newDocumentTypes', replacementTarget.vehicle_document_type || 'Other')
+        formData.append('newDocumentIds', replacementTarget.id)
+        formData.append('removeDocumentIds', replacementTarget.vehicle_document_public_id)
+        await vehicleService.updateVehicle(replacementTarget.vehicle_id, formData)
+        if (syncVehicles) await syncVehicles({ force: true })
+      } else {
+        const updated = await documentService.replaceDocument(replacementTarget.id, replacementFile)
+        if (updateRecord) {
+          updateRecord('documents', replacementTarget.id, {
+            ...updated,
+            backendSynced: true,
+          })
+        }
+        if (syncDocuments) await syncDocuments()
+      }
+
+      setDocumentNotice(`${replacementTarget.name} was replaced successfully.`)
+      setReplacementTarget(null)
+      setReplacementFile(null)
+      setReplacementError('')
+    } catch (err) {
+      setReplacementError(err.message || 'Failed to replace the document. The existing file was preserved.')
+    } finally {
+      setIsReplacing(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader
@@ -1457,6 +1545,12 @@ function Documents() {
           </div>
         }
       />
+
+      {documentNotice && (
+        <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          {documentNotice}
+        </div>
+      )}
 
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="All documents" value={allDocuments.length} icon={FileText} />
@@ -1524,6 +1618,17 @@ function Documents() {
                       <Eye size={14} className="mr-1" />
                       View
                     </Button>
+                    <button
+                      type="button"
+                      disabled={row.isVehicleAttachment && !row.vehicle_document_public_id}
+                      onClick={() => openReplacement(row)}
+                      aria-label={`Replace ${row.name}`}
+                      title={row.isVehicleAttachment && !row.vehicle_document_public_id ? 'This file has no storage ID' : 'Replace document file'}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <RefreshCw size={13} />
+                      Replace
+                    </button>
 
                     {docUrl && (
                       <a
@@ -1708,6 +1813,18 @@ function Documents() {
                 {selected.id} · {selected.category} · {selected.scope}
               </span>
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="quiet"
+                  disabled={selected.isVehicleAttachment && !selected.vehicle_document_public_id}
+                  onClick={() => {
+                    openReplacement(selected)
+                    setSelected(null)
+                  }}
+                >
+                  <RefreshCw size={14} />
+                  Replace
+                </Button>
                 {(selected.file_url || selected.url) && (
                   <a
                     href={selected.file_url || selected.url}
@@ -1786,6 +1903,75 @@ function Documents() {
               ))}
             </div>
           </div>
+        </Modal>
+      )}
+
+      {replacementTarget && (
+        <Modal
+          title={`Replace document · ${replacementTarget.name}`}
+          onClose={() => {
+            if (!isReplacing) {
+              setReplacementTarget(null)
+              setReplacementFile(null)
+              setReplacementError('')
+            }
+          }}
+          footer={
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={isReplacing}
+                onClick={() => setReplacementTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" form="replace-document-form" disabled={isReplacing || !replacementFile || Boolean(replacementError)}>
+                {isReplacing ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    Replacing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={15} />
+                    Replace file
+                  </>
+                )}
+              </Button>
+            </div>
+          }
+        >
+          <form id="replace-document-form" onSubmit={handleReplaceDocument} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              This replaces the file for <span className="font-semibold">{replacementTarget.id}</span> without creating another document record.
+              {replacementTarget.vehicle_name ? ` The vehicle association with ${replacementTarget.vehicle_name} is retained.` : ''}
+            </p>
+            {replacementError && (
+              <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                {replacementError}
+              </p>
+            )}
+            <div>
+              <label htmlFor="replacement-document-file" className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Replacement file (PDF, PNG, JPG, WEBP; up to 10 MB) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                id="replacement-document-file"
+                type="file"
+                required
+                disabled={isReplacing}
+                accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                onChange={handleReplacementFileChange}
+                className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-emerald-700 hover:file:bg-emerald-100"
+              />
+              {replacementFile && !replacementError && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Selected: <span className="font-medium text-slate-700">{replacementFile.name}</span> ({(replacementFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+          </form>
         </Modal>
       )}
     </div>
@@ -1932,6 +2118,7 @@ function Staff() {
   const [documentsByStaff, setDocumentsByStaff] = useState({})
   const [documentTypes, setDocumentTypes] = useState({})
   const [documentErrors, setDocumentErrors] = useState({})
+  const [replacingStaffDocument, setReplacingStaffDocument] = useState(null)
   const [previewDocument, setPreviewDocument] = useState(null)
   const [previewUrl, setPreviewUrl] = useState('')
 
@@ -2032,6 +2219,52 @@ function Staff() {
     }
 
     event.target.value = ''
+  }
+
+  async function replaceStaffDocument(person, document, event) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    if (replacingStaffDocument) return
+
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    const allowedTypes = {
+      pdf: 'application/pdf',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      png: 'image/png',
+    }
+    if (!allowedTypes[extension] || (file.type && file.type !== allowedTypes[extension])) {
+      setDocumentErrors((current) => ({ ...current, [person.id]: 'Only PDF, JPG, JPEG, and PNG files are supported.' }))
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setDocumentErrors((current) => ({ ...current, [person.id]: 'Documents must be 10 MB or smaller.' }))
+      return
+    }
+
+    const replacingKey = `${person.id}:${document.id}`
+    setReplacingStaffDocument(replacingKey)
+    setDocumentErrors((current) => ({ ...current, [person.id]: '' }))
+    try {
+      const updated = await staffService.replaceStaffDocument(person.id, document.id, file)
+      setDocumentsByStaff((current) => ({
+        ...current,
+        [person.id]: (current[person.id] || []).map((item) =>
+          item.id === document.id ? updated : item,
+        ),
+      }))
+      setPreviewDocument((current) => current?.id === document.id ? updated : current)
+      if (syncStaff) await syncStaff()
+      setNotice(`${document.category}: ${document.name} replaced successfully.`)
+    } catch (err) {
+      setDocumentErrors((current) => ({
+        ...current,
+        [person.id]: err.message || 'Failed to replace the document.',
+      }))
+    } finally {
+      setReplacingStaffDocument(null)
+    }
   }
 
   function downloadDocument(document) {
@@ -2152,6 +2385,16 @@ function Staff() {
                         </span>
                         <button type="button" onClick={() => setPreviewDocument(document)} aria-label={`View ${document.name}`} className="font-semibold text-emerald-800 hover:text-emerald-950">View</button>
                         <button type="button" onClick={() => downloadDocument(document)} aria-label={`Download ${document.name}`} className="font-semibold text-slate-600 hover:text-slate-900">Download</button>
+                        <label className={`cursor-pointer font-semibold ${replacingStaffDocument ? 'text-slate-400' : 'text-emerald-800 hover:text-emerald-950'}`}>
+                          {replacingStaffDocument === `${row.id}:${document.id}` ? <Loader2 size={12} className="inline animate-spin" aria-label="Replacing" /> : 'Replace'}
+                          <input
+                            type="file"
+                            accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                            disabled={Boolean(replacingStaffDocument)}
+                            onChange={(event) => replaceStaffDocument(row, document, event)}
+                            className="sr-only"
+                          />
+                        </label>
                         <button
                           type="button"
                           onClick={() => deleteDocument(row.id, document.id)}

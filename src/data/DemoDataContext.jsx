@@ -288,6 +288,15 @@ export function DemoDataProvider({ children }) {
         status: d.status || 'Verified',
         scope: d.scope || 'Business',
         file_url: d.file_url,
+        public_id: d.public_id,
+        resource_type: d.resource_type,
+        file_name: d.file_name,
+        file_size: d.file_size,
+        format: d.format,
+        vehicle_id: d.vehicle_id,
+        vehicle_name: d.vehicle_name,
+        notes: d.notes,
+        updated_at: d.updated_at,
         backendSynced: true,
       }))
       setData((current) => ({
