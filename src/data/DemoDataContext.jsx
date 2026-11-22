@@ -63,10 +63,28 @@ export function DemoDataProvider({ children }) {
     setVehiclesError(null)
     const request = (async () => {
       try {
-        const res = await vehicleService.listVehicles({ limit: 100 })
-        const backendVehicles = Array.isArray(res) ? res : res?.items
+        const firstResponse = await vehicleService.listVehicles({ limit: 100 })
+        const backendVehicles = Array.isArray(firstResponse) ? [...firstResponse] : firstResponse?.items
         if (!Array.isArray(backendVehicles)) {
           throw new Error('Invalid vehicle list response.')
+        }
+
+        const total = Array.isArray(firstResponse)
+          ? backendVehicles.length
+          : Number.isInteger(firstResponse.total) && firstResponse.total >= 0
+            ? firstResponse.total
+            : backendVehicles.length
+
+        if (!Array.isArray(firstResponse)) {
+          const pageCount = Math.ceil(total / 100)
+          for (let nextPage = 2; nextPage <= pageCount; nextPage += 1) {
+            const nextResponse = await vehicleService.listVehicles({ page: nextPage, limit: 100 })
+            const nextVehicles = Array.isArray(nextResponse) ? nextResponse : nextResponse?.items
+            if (!Array.isArray(nextVehicles)) {
+              throw new Error(`Invalid vehicle list response for page ${nextPage}.`)
+            }
+            backendVehicles.push(...nextVehicles)
+          }
         }
 
         const mapped = backendVehicles.map((v) => {
@@ -94,18 +112,13 @@ export function DemoDataProvider({ children }) {
             fleetAvailability: v.fleetAvailability || v.availability || 'Available',
             price: Number(v.dailyRate || v.price || 0),
             dailyRate: Number(v.dailyRate || v.price || 0),
-            image: firstPhotoUrl || (v.type === 'Electric' ? '⚡' : v.type === 'Scooter' ? '🛵' : '🏍️'),
+            location: v.pickupLocation?.address || v.pickupAddress || v.location || '',
+            image: firstPhotoUrl || v.image || (v.type === 'Electric' ? '⚡' : v.type === 'Scooter' ? '🛵' : '🏍️'),
             photos: v.photos || [],
             documents: v.documents || [],
             backendSynced: true,
           }
         })
-        const total = Array.isArray(res)
-          ? mapped.length
-          : Number.isInteger(res.total) && res.total >= 0
-            ? res.total
-            : mapped.length
-
         setData((current) => ({
           ...current,
           vehicles: mapped,

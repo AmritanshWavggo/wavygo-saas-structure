@@ -45,7 +45,7 @@ function isListedOnWavyGo(vehicle) {
 
 function Vehicles() {
   const navigate = useNavigate()
-  const { vehicles, updateRecord, addRecord, deleteRecord, syncVehicles, syncMaintenance } = useDemoData()
+  const { vehicles, updateRecord, addRecord, deleteRecord, syncVehicles, syncMaintenance, vehiclesLoading, vehiclesError } = useDemoData()
   const [activeTab, setActiveTab] = useState('All vehicles')
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState('All types')
@@ -268,7 +268,7 @@ function Vehicles() {
       const matchesTab = activeTab === 'All vehicles' || (activeTab === 'Online' ? isListed : !isListed)
       const matchesType = typeFilter === 'All types' || vehicle.type === typeFilter
       const matchesAvailability = availabilityFilter === 'All availability' || vehicle.availability === availabilityFilter
-      const matchesSearch = !query || [vehicle.name, vehicle.registration, vehicle.id, vehicle.type, vehicle.availability].some((field) => String(field || '').toLowerCase().includes(query))
+      const matchesSearch = !query || [vehicle.name, vehicle.registration, vehicle.id, vehicle.type, vehicle.availability, vehicle.location].some((field) => String(field || '').toLowerCase().includes(query))
       return matchesTab && matchesType && matchesAvailability && matchesSearch
     })
   }, [vehicles, activeTab, search, typeFilter, availabilityFilter])
@@ -291,9 +291,8 @@ function Vehicles() {
       if (syncVehicles) await syncVehicles({ force: true })
       else updateRecord('vehicles', id, { showOnWavygo: nextState, show_on_wavygo: nextState, status: nextState ? 'Online' : 'Offline' })
       setNotice(`Listing updated: ${vehicle.name} is now ${nextState ? 'Online on WavyGo' : 'taken Offline'}.`)
-    } catch {
-      updateRecord('vehicles', id, { showOnWavygo: nextState, show_on_wavygo: nextState, status: nextState ? 'Online' : 'Offline' })
-      setNotice('Status updated locally.')
+    } catch (err) {
+      setNotice(`Failed to update listing: ${err.message || 'Error occurred'}`)
     }
     setPage(1)
   }
@@ -349,7 +348,7 @@ function Vehicles() {
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
               <h2 className="text-base font-semibold text-slate-900">Your fleet <span className="ml-1 text-sm font-medium text-slate-400">{vehicles.length}</span></h2>
-              <p className="mt-1 text-xs text-slate-500">Preview fleet · listing updates are not connected to an API</p>
+              <p className="mt-1 text-xs text-slate-500">Live fleet · manage vehicle availability and marketplace listings.</p>
             </div>
             <button type="button" onClick={resetFilters} className="inline-flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-500 hover:bg-slate-50 hover:text-slate-800"><SlidersHorizontal size={14} /> Reset filters</button>
           </div>
@@ -381,7 +380,22 @@ function Vehicles() {
           </label>
         </div>
 
-        {filteredVehicles.length ? (
+        {vehiclesError && vehicles.length > 0 && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+            <p>Could not refresh vehicles: {vehiclesError}. Showing the last loaded results.</p>
+            <button type="button" onClick={() => syncVehicles({ force: true })} className="font-semibold underline">Retry</button>
+          </div>
+        )}
+
+        {vehiclesLoading && vehicles.length === 0 ? (
+          <div role="status" className="px-5 py-16 text-center text-sm text-slate-500">Loading vehicles…</div>
+        ) : vehiclesError && vehicles.length === 0 ? (
+          <div className="px-5 py-16 text-center sm:py-20">
+            <h3 role="alert" className="text-base font-semibold text-rose-800">Could not load vehicles</h3>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">{vehiclesError}</p>
+            <button type="button" onClick={() => syncVehicles({ force: true })} className="mt-4 text-sm font-semibold text-emerald-800 hover:text-emerald-950">Retry</button>
+          </div>
+        ) : filteredVehicles.length ? (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[850px] border-collapse text-left">
               <thead><tr className="bg-slate-50/80 text-[11px] font-semibold uppercase tracking-[0.11em] text-slate-400">
@@ -471,6 +485,13 @@ function Vehicles() {
               </tbody>
             </table>
           </div>
+        ) : vehicles.length === 0 ? (
+          <div className="px-5 py-16 text-center sm:py-20">
+            <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-800"><CarFront size={22} /></span>
+            <h3 className="mt-4 text-base font-semibold text-slate-900">No vehicles in your fleet yet</h3>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm leading-6 text-slate-500">Add a vehicle to see it listed here.</p>
+            <button type="button" onClick={() => navigate('/app/vehicles/new')} className="mt-4 text-sm font-semibold text-emerald-800 hover:text-emerald-950">Add vehicle</button>
+          </div>
         ) : (
           <div className="px-5 py-16 text-center sm:py-20">
             <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-800"><Search size={22} /></span>
@@ -480,12 +501,12 @@ function Vehicles() {
           </div>
         )}
         <footer className="flex flex-col gap-3 border-t border-slate-100 px-4 py-3.5 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-          <p>Showing <span className="font-semibold text-slate-700">{visibleVehicles.length}</span> of <span className="font-semibold text-slate-700">{filteredVehicles.length}</span> matching vehicles {visibleVehicles.some(v => v.backendSynced) ? '· Database live' : '· preview data'}</p>
+          <p>Showing <span className="font-semibold text-slate-700">{visibleVehicles.length}</span> of <span className="font-semibold text-slate-700">{filteredVehicles.length}</span> matching vehicles {vehiclesLoading ? '· Loading' : vehiclesError ? '· API unavailable' : '· API live'}</p>
           <div className="flex items-center gap-3"><button type="button" disabled={page <= 1} onClick={() => setPage((current) => current - 1)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold disabled:opacity-40">Previous</button><span>Page {page} of {pageCount}</span><button type="button" disabled={page >= pageCount} onClick={() => setPage((current) => current + 1)} className="rounded-lg border border-slate-200 px-2.5 py-1.5 font-semibold disabled:opacity-40">Next</button></div>
         </footer>
       </div>
 
-      <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-xs leading-5 ${notice ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200/70 bg-white/70 text-slate-500'}`}><CircleHelp size={16} className="shrink-0 text-emerald-700" /><p>{notice || (vehicles.some(v => v.backendSynced) ? 'Live mode: Connected to MongoDB database. Listing and fleet availability changes persist in real time.' : 'Connecting to database...')}</p></div>
+      <div className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-xs leading-5 ${notice ? 'border-amber-200 bg-amber-50 text-amber-900' : 'border-slate-200/70 bg-white/70 text-slate-500'}`}><CircleHelp size={16} className="shrink-0 text-emerald-700" /><p>{notice || (vehiclesLoading ? 'Connecting to the vehicle API...' : vehiclesError ? `Vehicle API unavailable: ${vehiclesError}` : 'Live mode: Connected to the vehicle API. Listing and fleet availability changes persist in real time.')}</p></div>
 
       {selectedVehicle && <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/35 p-4 backdrop-blur-[2px]" onClick={() => setSelectedVehicle(null)}><article role="dialog" aria-modal="true" aria-labelledby="vehicle-detail-title" onClick={(event) => event.stopPropagation()} className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl sm:p-6"><div className="flex items-start justify-between"><div className="flex items-center gap-3"><VehicleArt vehicle={selectedVehicle} /><div><h2 id="vehicle-detail-title" className="font-semibold text-slate-900">{selectedVehicle.name}</h2><p className="mt-1 text-xs text-slate-500">{selectedVehicle.type || 'Type unavailable'}</p></div></div><button type="button" onClick={() => setSelectedVehicle(null)} aria-label="Close details" className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100"><X size={17} /></button></div><div className="mt-5 grid grid-cols-2 gap-3 text-sm">{[['Registration / RC', selectedVehicle.registration], ['Fleet ID', selectedVehicle.id], ['Make / model', selectedVehicle.name], ['Model year', selectedVehicle.year], ['Type', selectedVehicle.type], ['Fuel', selectedVehicle.fuel], ['Color', selectedVehicle.color], ['Engine capacity', selectedVehicle.engineCapacity ? `${selectedVehicle.engineCapacity} cc` : 'Not provided'], ['Seats', selectedVehicle.seats], ['Show on WavyGo', isListedOnWavyGo(selectedVehicle) ? 'On' : 'Off'], ['Fleet availability', selectedVehicle.availability || 'Not provided'], ['Daily rate', selectedVehicle.price ? `₹${Number(selectedVehicle.price).toLocaleString('en-IN')} / day` : 'Not provided'], ['Pickup location', selectedVehicle.location || selectedVehicle.pickupLocation], ['Minimum rental', selectedVehicle.minimumDays ? `${selectedVehicle.minimumDays} days` : 'Not provided']].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-[11px] font-medium text-slate-400">{label}</p><p className="mt-1 font-semibold text-slate-800">{value || 'Not provided'}</p></div>)}</div><section className="mt-5"><h3 className="text-sm font-semibold text-slate-900">Documents</h3>{Array.isArray(selectedVehicle.documents) && selectedVehicle.documents.length ? <ul className="mt-2 space-y-2">{selectedVehicle.documents.map((doc, index) => { const url = typeof doc === 'string' ? doc : doc.url; return <li key={doc.id || doc.name || index} className="flex items-center justify-between rounded-xl border border-slate-100 p-3 text-sm"><span>{doc.name || doc.type || 'Vehicle document'}</span>{url ? <a href={url} target="_blank" rel="noreferrer" className="font-semibold text-emerald-800 hover:underline">Open</a> : <span className="text-xs text-slate-400">File unavailable</span>}</li> })}</ul> : <p className="mt-2 rounded-xl bg-slate-50 p-3 text-sm text-slate-500">No vehicle documents are available.</p>}</section><button type="button" onClick={() => setSelectedVehicle(null)} className="mt-5 h-10 w-full rounded-xl bg-emerald-800 text-sm font-semibold text-white hover:bg-emerald-900">Done</button></article></div>}
 
