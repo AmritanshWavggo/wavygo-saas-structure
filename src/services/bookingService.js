@@ -69,13 +69,16 @@ export const bookingService = {
   /**
    * Record a payment against an offline booking
    */
-  async recordPayment(bookingId, { amount, method = 'Cash', notes }) {
+  async recordPayment(bookingId, { amount, method = 'Cash', notes, transaction_reference, idempotency_key, payment_date }) {
     return apiFetch(`/bookings/offline/${encodeURIComponent(bookingId)}/payments`, {
       method: 'POST',
       body: JSON.stringify({
         amount: Number(amount),
         method,
         notes,
+        transaction_reference,
+        idempotency_key: idempotency_key || (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `idemp-${Date.now()}`),
+        payment_date,
       }),
     })
   },

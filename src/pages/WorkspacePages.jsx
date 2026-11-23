@@ -35,6 +35,7 @@ import { financeService } from '../services/financeService.js'
 import { reportService } from '../services/reportService.js'
 import { staffService } from '../services/staffService.js'
 import { vehicleService } from '../services/vehicleService.js'
+import { RecordPaymentModal } from '../components/RecordPaymentModal.jsx'
 import {
   BarChart,
   Button,
@@ -50,6 +51,20 @@ import {
   StatusBadge,
   Tabs,
 } from '../components/ui/Workspace.jsx'
+
+function PaymentStatusBadge({ status }) {
+  const styles = {
+    Paid: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
+    'Partially Paid': 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    Unpaid: 'bg-rose-50 text-rose-700 ring-rose-600/20',
+  }
+  const cls = styles[status] || 'bg-slate-100 text-slate-700 ring-slate-500/20'
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${cls}`}>
+      {status || 'Unpaid'}
+    </span>
+  )
+}
 
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
@@ -298,7 +313,7 @@ function Bookings() {
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
-  const [paymentForm, setPaymentForm] = useState(null)
+  const [paymentModalBooking, setPaymentModalBooking] = useState(null)
   const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
@@ -379,23 +394,43 @@ function Bookings() {
             { key: 'dates', label: 'Rental dates' },
             { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
             { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            {
+              key: 'payment_status',
+              label: 'Payment',
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                return <PaymentStatusBadge status={pStatus} />
+              },
+            },
             { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) },
-            { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
+            {
+              key: 'outstanding',
+              label: 'Outstanding',
+              render: (row) => {
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                return currency(out)
+              },
+            },
             {
               key: 'actions',
               label: '',
-              render: (row) => (
-                <div className="flex gap-1">
-                  <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
-                    <Eye size={15} />
-                  </Button>
-                  {row.pending > 0 && (
-                    <Button variant="quiet" className="min-h-8 px-2" onClick={() => setPaymentForm(row)}>
-                      Record payment
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                const canPay = pStatus !== 'Paid' && out > 0 && row.status !== 'Cancelled'
+                return (
+                  <div className="flex gap-1">
+                    <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
+                      <Eye size={15} />
                     </Button>
-                  )}
-                </div>
-              ),
+                    {canPay && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => setPaymentModalBooking(row)}>
+                        Record payment
+                      </Button>
+                    )}
+                  </div>
+                )
+              },
             },
           ]}
         />
@@ -408,42 +443,35 @@ function Bookings() {
           title={`Booking ${selected.id}`}
           onClose={() => setSelected(null)}
           record={selected}
-          rows={Object.entries(selected).map(([key, value]) => [
-            key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
-            ['paid', 'pending', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
-          ])}
+          rows={[
+            ...Object.entries(selected).map(([key, value]) => [
+              key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
+              ['paid', 'pending', 'outstanding', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
+            ]),
+            ['Payment Status', selected.payment_status || (Number(selected.paid) >= Number(selected.total_amount) && Number(selected.total_amount) > 0 ? 'Paid' : Number(selected.paid) > 0 ? 'Partially Paid' : 'Unpaid')],
+            ['Payment Transactions', (selected.payment_details?.transactions || []).length > 0 ? (
+              <div className="mt-1 space-y-1.5">
+                {selected.payment_details.transactions.map((tx, idx) => (
+                  <div key={idx} className="rounded-md bg-slate-50 p-2 text-xs text-slate-700">
+                    <span className="font-semibold text-emerald-800">{tx.id || `TX-${idx+1}`}</span> · {currency(tx.amount)} via {tx.method} ({tx.date?.substring(0, 10) || 'Date N/A'})
+                    {tx.transaction_reference && <span className="block text-slate-400">Ref: {tx.transaction_reference}</span>}
+                    {tx.notes && <span className="block italic text-slate-500">Note: {tx.notes}</span>}
+                  </div>
+                ))}
+              </div>
+            ) : 'No transactions recorded yet'],
+          ]}
         />
       )}
-      {paymentForm && (
-        <RecordForm
-          title={`Record payment · ${paymentForm.id}`}
-          onClose={() => setPaymentForm(null)}
-          fields={[
-            { name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true },
-            { name: 'method', label: 'Payment method', type: 'text', placeholder: 'Cash, UPI, or Card' },
-          ]}
-          onSave={async (values) => {
-            // A partial-payment entry cannot exceed the booking's remaining balance.
-            const amount = Math.min(Number(values.amount), paymentForm.pending)
-            const method = values.method?.trim() || 'Cash'
-            try {
-              await bookingService.recordPayment(paymentForm.id, {
-                amount,
-                method,
-                notes: `Desk collection via ${method}`,
-              })
-              if (syncOfflineBookings) await syncOfflineBookings()
-              if (syncPayments) await syncPayments()
-            } catch (err) {
-              console.warn('Backend payment sync fallback to local state:', err)
-              updateRecord('bookings', paymentForm.id, {
-                paid: paymentForm.paid + amount,
-                pending: paymentForm.pending - amount,
-              })
-            }
-            setPaymentForm(null)
+      {paymentModalBooking && (
+        <RecordPaymentModal
+          isOpen={!!paymentModalBooking}
+          booking={paymentModalBooking}
+          onClose={() => setPaymentModalBooking(null)}
+          onSuccess={async () => {
+            if (syncOfflineBookings) await syncOfflineBookings()
+            if (syncPayments) await syncPayments()
           }}
-          saveLabel="Record Payment"
         />
       )}
     </div>

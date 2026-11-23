@@ -267,6 +267,91 @@ def list_customers(
         )
         items = [serialize_customer(document) for document in documents]
         total = collection.count_documents(tenant_filter)
+
+        # Single aggregation over non-cancelled, non-deleted bookings to compute fresh dues and total collected
+        database = getattr(collection, "database", None)
+        if database is not None and items and hasattr(database, "__getitem__"):
+            try:
+                v_id = vendor["_id"]
+                pipeline = [
+                    {
+                        "$match": {
+                            "$and": [
+                                {"$or": [
+                                    {"tenant_id": str(v_id)},
+                                    {"tenant_id": v_id},
+                                    {"vendor_id": str(v_id)},
+                                    {"vendor_id": v_id},
+                                ]},
+                                {"status": {"$ne": "Cancelled"}},
+                                {"deletedAt": {"$in": [None, False]}},
+                            ]
+                        }
+                    },
+                    {
+                        "$project": {
+                            "cust_id": {"$ifNull": ["$customer_details.id", ""]},
+                            "cust_phone": {"$ifNull": ["$customer_details.phone", ""]},
+                            "cust_name": {"$ifNull": ["$customer", ""]},
+                            "paid": {"$ifNull": ["$paid", 0.0]},
+                            "total": {"$ifNull": ["$total_amount", 0.0]},
+                        }
+                    },
+                    {
+                        "$group": {
+                            "_id": {
+                                "id": "$cust_id",
+                                "name": "$cust_name",
+                                "phone": "$cust_phone",
+                            },
+                            "total_paid": {"$sum": "$paid"},
+                            "total_amount": {"$sum": "$total"},
+                        }
+                    },
+                ]
+                agg_results = list(database["bookings"].aggregate(pipeline))
+                metrics_by_id: dict[str, dict[str, float]] = {}
+                metrics_by_name: dict[str, dict[str, float]] = {}
+                metrics_by_phone: dict[str, dict[str, float]] = {}
+
+                for row in agg_results:
+                    info = row["_id"]
+                    cid = str(info.get("id") or "").strip()
+                    cname = str(info.get("name") or "").strip().lower()
+                    cphone = normalize_phone(str(info.get("phone") or ""))
+                    t_paid = round(float(row.get("total_paid", 0.0)), 2)
+                    t_total = round(float(row.get("total_amount", 0.0)), 2)
+                    t_pending = max(0.0, round(t_total - t_paid, 2))
+
+                    val = {
+                        "paid": t_paid,
+                        "pending": t_pending,
+                    }
+                    if cid:
+                        metrics_by_id[cid] = val
+                    if cname:
+                        metrics_by_name[cname] = val
+                    if cphone:
+                        metrics_by_phone[cphone] = val
+
+                for item in items:
+                    item_id = str(item.get("id", "")).strip()
+                    item_name = str(item.get("name", "")).strip().lower()
+                    item_phone = normalize_phone(str(item.get("phone", "")))
+
+                    matched = (
+                        metrics_by_id.get(item_id)
+                        or metrics_by_phone.get(item_phone)
+                        or metrics_by_name.get(item_name)
+                    )
+                    if matched:
+                        item["paid"] = matched["paid"]
+                        item["pending"] = matched["pending"]
+                    else:
+                        item["paid"] = 0.0
+                        item["pending"] = 0.0
+            except Exception as agg_exc:
+                logger.debug("Non-fatal booking aggregation for customers: %s", agg_exc)
     except PyMongoError:
         raise_storage_error()
     return {"items": items, "total": total, "skip": skip, "limit": limit}
