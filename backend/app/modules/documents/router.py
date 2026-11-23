@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from typing import List, Optional
-from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 
-from app.modules.auth.security import get_optional_vendor
+from app.modules.auth.security import get_current_vendor, get_optional_vendor
 from app.modules.documents.schemas import DocumentResponse, DocumentUpdate
 from app.modules.documents.service import document_service
 
@@ -88,6 +88,36 @@ def list_documents(
         limit=limit,
         tenant_id=tenant_id,
     )
+
+
+@router.put(
+    "/{document_id}/file",
+    response_model=DocumentResponse,
+    summary="Replace an uploaded document file",
+)
+async def replace_document_file(
+    document_id: str,
+    vendor: dict = Depends(get_current_vendor),
+    file: UploadFile = File(..., description="Replacement document file"),
+) -> DocumentResponse:
+    role = vendor.get("role")
+    if role is not None and str(role).lower() not in {"owner", "admin", "administrator"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the document owner or an administrator can replace this file.",
+        )
+
+    replaced = await document_service.replace_document(
+        document_id,
+        file,
+        tenant_id=str(vendor["_id"]),
+    )
+    if not replaced:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document with ID '{document_id}' not found.",
+        )
+    return replaced
 
 
 @router.get(

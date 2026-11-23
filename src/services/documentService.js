@@ -16,6 +16,18 @@ export const documentService = {
   },
 
   /**
+   * Replace the stored file without creating a new document record
+   */
+  async replaceDocument(documentId, file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiFetch(`/documents/${encodeURIComponent(documentId)}/file`, {
+      method: 'PUT',
+      body: formData,
+    })
+  },
+
+  /**
    * List documents with optional filters
    */
   async listDocuments({ scope, category, status, query, skip = 0, limit = 50 } = {}) {

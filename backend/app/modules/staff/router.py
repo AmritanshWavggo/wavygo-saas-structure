@@ -198,6 +198,13 @@ def update_staff(
 
 
 DOCUMENTS_UPLOAD_DIR = Path("backend/uploads/staff_documents")
+MAX_STAFF_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024
+STAFF_DOCUMENT_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
 
 
 @router.post("/{staff_id}/documents", status_code=status.HTTP_201_CREATED, summary="Upload staff document")
@@ -242,6 +249,92 @@ async def upload_staff_document(
 
     collection.update_one(query, {"$push": {"documents": doc_entry}})
     return doc_entry
+
+
+@router.put(
+    "/{staff_id}/documents/{document_id}",
+    summary="Replace staff document",
+)
+async def replace_staff_document(
+    staff_id: str,
+    document_id: str,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+    collection: Annotated[Collection, Depends(get_staff_collection)],
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    object_id = parse_staff_id(staff_id)
+    query = {"_id": object_id, "tenant_id": vendor["_id"]}
+    staff_member = collection.find_one(query)
+    if not staff_member:
+        raise HTTPException(status_code=404, detail="Staff member not found.")
+
+    documents = staff_member.get("documents", [])
+    existing = next((item for item in documents if item.get("id") == document_id), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Document not found.")
+
+    filename = (file.filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+    extension = Path(filename).suffix.lower()
+    if not filename or STAFF_DOCUMENT_MIME_TYPES.get(extension) != file.content_type:
+        raise HTTPException(
+            status_code=422,
+            detail="Only PDF, JPG, JPEG, and PNG files are supported.",
+        )
+    if file.size is not None and file.size > MAX_STAFF_DOCUMENT_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Document exceeds the 10 MB limit.")
+
+    content = await file.read(MAX_STAFF_DOCUMENT_SIZE_BYTES + 1)
+    if len(content) > MAX_STAFF_DOCUMENT_SIZE_BYTES:
+        raise HTTPException(status_code=413, detail="Document exceeds the 10 MB limit.")
+    if not content:
+        raise HTTPException(status_code=422, detail="The replacement document cannot be empty.")
+
+    new_path = DOCUMENTS_UPLOAD_DIR / staff_id / f"{document_id}_{uuid.uuid4().hex}_{filename}"
+    try:
+        new_path.parent.mkdir(parents=True, exist_ok=True)
+        new_path.write_bytes(content)
+    except OSError as exc:
+        logger.exception("Could not save replacement staff document.")
+        raise HTTPException(
+            status_code=500,
+            detail="Could not store the replacement document.",
+        ) from exc
+
+    updated = {
+        **existing,
+        "name": filename,
+        "url": f"/api/v1/staff/{staff_id}/documents/{document_id}/download",
+        "content_type": file.content_type,
+        "size": len(content),
+        "file_path": str(new_path),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        result = collection.update_one(
+            {**query, "documents.id": document_id},
+            {"$set": {"documents.$": updated}},
+        )
+        if result.matched_count != 1:
+            new_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=404, detail="Document not found.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        new_path.unlink(missing_ok=True)
+        logger.exception("Could not update staff document metadata.")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not save the replacement. The existing document was preserved.",
+        ) from exc
+
+    old_path = existing.get("file_path")
+    if old_path and old_path != str(new_path) and os.path.exists(old_path):
+        try:
+            os.remove(old_path)
+        except OSError:
+            logger.exception("Could not remove replaced staff document file %s.", old_path)
+
+    return updated
 
 
 @router.get("/{staff_id}/documents", summary="List staff documents")
