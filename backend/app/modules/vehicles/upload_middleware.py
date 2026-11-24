@@ -63,7 +63,7 @@ def _validate_file(
     """Shared validation logic — raises HTTP 422 on violations."""
     if file.content_type not in allowed_types:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"Invalid {label} file type '{file.content_type}'. "
                 f"Allowed: {sorted(allowed_types)}."
@@ -73,7 +73,7 @@ def _validate_file(
     # check file.size when available (FastAPI populates it after reading).
     if file.size is not None and file.size > max_bytes:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"{label.capitalize()} file exceeds the {max_bytes // (1024 * 1024)} MB limit."
             ),

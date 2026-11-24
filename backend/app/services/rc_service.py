@@ -53,12 +53,13 @@ def validate_rc_format(rc: str) -> bool:
     return bool(_RC_PATTERN.match(rc))
 
 
-def check_rc_duplicate(rc: str, db_collection: Any) -> bool:
+def check_rc_duplicate(rc: str, db_collection: Any, tenant_id: Optional[str] = None) -> bool:
     """
     Check whether *rc* already exists in the vehicles collection.
 
     Designed so that callers can pass a PyMongo collection object.
-    The query searches the normalised ``registration_number`` field.
+    The query searches the normalised ``registrationNumber`` field.
+    If *tenant_id* is provided, checks duplicate within that tenant's fleet.
 
     Parameters
     ----------
@@ -67,12 +68,25 @@ def check_rc_duplicate(rc: str, db_collection: Any) -> bool:
     db_collection:
         A PyMongo ``Collection`` instance (or any object with a
         ``.find_one(filter)`` method — useful for testing with mocks).
+    tenant_id:
+        Optional tenant ID to scope duplicate check per-vendor fleet.
 
     Returns
     -------
     True if a duplicate is found, False otherwise.
     """
-    existing = db_collection.find_one({"registrationNumber": rc})
+    norm = normalise_rc(rc)
+    if tenant_id:
+        filter_query: dict[str, Any] = {
+            "registrationNumber": norm,
+            "$or": [
+                {"tenant_id": str(tenant_id)},
+                {"tenantId": str(tenant_id)},
+            ],
+        }
+    else:
+        filter_query = {"registrationNumber": norm}
+    existing = db_collection.find_one(filter_query)
     return existing is not None
 
 

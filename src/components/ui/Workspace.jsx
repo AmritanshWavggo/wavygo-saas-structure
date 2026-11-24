@@ -88,6 +88,7 @@ const badgeStyles = {
   Rented: 'bg-blue-50 text-blue-700 ring-blue-600/15',
   Maintenance: 'bg-violet-50 text-violet-700 ring-violet-600/15',
   Cancelled: 'bg-rose-50 text-rose-700 ring-rose-600/15',
+  Refunded: 'bg-rose-50 text-rose-700 ring-rose-600/15',
 }
 
 export function StatusBadge({ status }) {

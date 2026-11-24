@@ -62,6 +62,7 @@ class FleetAvailability(str, Enum):
 
     available = "Available"
     rented = "Rented"
+    under_review = "Under Review"
     maintenance = "Maintenance"
 
 
@@ -189,6 +190,11 @@ class VehicleModel(BaseModel):
             "Existing records without this field are not affected."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Tenant ownership
+    # ------------------------------------------------------------------
+    tenant_id: Optional[str] = Field(default=None, alias="tenantId")
 
     # ------------------------------------------------------------------
     # Timestamps

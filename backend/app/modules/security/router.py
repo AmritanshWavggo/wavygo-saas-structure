@@ -24,6 +24,15 @@ def now():
 def db_for(request):
     db = getattr(request.app.state, "database", None)
     if db is None:
+        try:
+            from app.db.mongodb import create_mongo_client, get_database
+            client = create_mongo_client()
+            if client is not None:
+                db = get_database(client)
+                request.app.state.database = db
+        except Exception:
+            db = None
+    if db is None:
         raise HTTPException(503, "Security storage is unavailable.")
     return db
 

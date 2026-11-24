@@ -19,16 +19,40 @@ from typing import Any
 import cloudinary
 import cloudinary.uploader
 
-# ---------------------------------------------------------------------------
-# Configure the SDK from environment variables at import time.
-# The SDK reads the config object on every call, so this is sufficient.
-# ---------------------------------------------------------------------------
-cloudinary.config(
-    cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME", ""),
-    api_key=os.environ.get("CLOUDINARY_API_KEY", ""),
-    api_secret=os.environ.get("CLOUDINARY_API_SECRET", ""),
-    secure=True,
-)
+from app.core.config import settings
+
+
+def _ensure_cloudinary_configured() -> None:
+    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME") or settings.cloudinary_cloud_name
+    api_key = os.environ.get("CLOUDINARY_API_KEY") or settings.cloudinary_api_key
+    api_secret = os.environ.get("CLOUDINARY_API_SECRET") or settings.cloudinary_api_secret
+
+    if not (cloud_name and api_key and api_secret):
+        missing = []
+        if not cloud_name:
+            missing.append("CLOUDINARY_CLOUD_NAME")
+        if not api_key:
+            missing.append("CLOUDINARY_API_KEY")
+        if not api_secret:
+            missing.append("CLOUDINARY_API_SECRET")
+        raise RuntimeError(
+            f"Cloudinary is not configured. "
+            f"Set the following environment variable(s): {', '.join(missing)}"
+        )
+
+    cloudinary.config(
+        cloud_name=cloud_name,
+        api_key=api_key,
+        api_secret=api_secret,
+        secure=True,
+    )
+
+
+# Configure SDK on module load if possible
+try:
+    _ensure_cloudinary_configured()
+except Exception:
+    pass
 
 
 def upload_file(file_bytes: bytes, folder: str, **kwargs: Any) -> dict[str, Any]:
@@ -51,16 +75,7 @@ def upload_file(file_bytes: bytes, folder: str, **kwargs: Any) -> dict[str, Any]
         url        – secure HTTPS URL of the uploaded asset
         public_id  – Cloudinary public ID needed to delete or transform later
     """
-    missing = [
-        name
-        for name in ("CLOUDINARY_CLOUD_NAME", "CLOUDINARY_API_KEY", "CLOUDINARY_API_SECRET")
-        if not os.environ.get(name, "").strip()
-    ]
-    if missing:
-        raise RuntimeError(
-            f"Cloudinary is not configured. "
-            f"Set the following environment variable(s): {', '.join(missing)}"
-        )
+    _ensure_cloudinary_configured()
     result: dict[str, Any] = cloudinary.uploader.upload(
         file_bytes,
         folder=folder,
@@ -88,6 +103,7 @@ def delete_file(public_id: str, **kwargs: Any) -> dict[str, Any]:
     -------
     Cloudinary API response dict (contains a "result" key: "ok" on success).
     """
+    _ensure_cloudinary_configured()
     return cloudinary.uploader.destroy(public_id, **kwargs)  # type: ignore[return-value]
 
 
@@ -110,4 +126,5 @@ def delete_files(public_ids: list[str], **kwargs: Any) -> list[dict[str, Any]]:
     -------
     List of Cloudinary API response dicts, one per public_id.
     """
+    _ensure_cloudinary_configured()
     return [delete_file(pid, **kwargs) for pid in public_ids]

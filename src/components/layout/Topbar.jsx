@@ -14,6 +14,7 @@ const destinations = [
   { label: 'Payments', to: '/app/payments' },
   { label: 'Documents', to: '/app/documents' },
   { label: 'Maintenance', to: '/app/maintenance' },
+  { label: 'Notifications', to: '/app/notifications' },
   { label: 'Staff', to: '/app/staff' },
   { label: 'Reports', to: '/app/reports' },
   { label: 'Settings', to: '/app/settings' },
@@ -30,8 +31,7 @@ const demoRoles = ['Admin', 'Founder', 'Manager', 'Employee', 'Intern']
 function Topbar({ onOpenMobileSidebar }) {
   const [menu, setMenu] = useState('')
   const [query, setQuery] = useState('')
-  const [vendor, setVendor] = useState('WavyGo Mobility')
-  const [notificationsRead, setNotificationsRead] = useState(false)
+  const [profile, setProfile] = useState(null)
   const headerRef = useRef(null)
   const navigate = useNavigate()
   const { currentDemoUser, currentDemoRole, setCurrentDemoRole } = useDemoData()
@@ -55,10 +55,10 @@ function Topbar({ onOpenMobileSidebar }) {
     }
   }, [])
 
-  function goToSearchResult(item) {
-    navigate(item.to)
-    setQuery('')
+  function handleLogout() {
+    authService.logout()
     setMenu('')
+    navigate('/login')
   }
 
   function handleSearchKey(event) {
@@ -99,16 +99,25 @@ function Topbar({ onOpenMobileSidebar }) {
       </div>
 
       <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
-        <span className="hidden rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-amber-800 md:inline-flex">Demo</span>
+        <span className="hidden rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[9px] font-semibold uppercase tracking-[0.08em] text-emerald-800 md:inline-flex">
+          Live Hub
+        </span>
+
+        {/* Quick Create Menu */}
         <div className="relative">
           <button type="button" aria-expanded={menu === 'create'} onClick={() => setMenu(menu === 'create' ? '' : 'create')} className="inline-flex h-10 items-center gap-1.5 rounded-xl bg-emerald-800 px-3 text-xs font-semibold text-white transition hover:bg-emerald-900 sm:px-3.5"><Plus size={16} aria-hidden="true" /><span className="hidden sm:inline">Create</span><ChevronDown size={13} aria-hidden="true" className="hidden sm:block" /></button>
           {menu === 'create' && <div className="absolute right-0 top-12 z-50 w-60 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl"><p className="px-3 pb-1.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-400">Quick actions</p>{createActions.map(({ label, to, icon: Icon }) => <Link key={to} to={to} onClick={() => setMenu('')} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs font-medium text-slate-700 hover:bg-emerald-50 hover:text-emerald-900"><Icon size={16} aria-hidden="true" className="text-emerald-800" />{label}</Link>)}</div>}
         </div>
+
+        {/* Real-time Notifications Bell */}
         <div className="relative">
           <button type="button" aria-label="Notifications" aria-expanded={menu === 'notifications'} onClick={() => setMenu(menu === 'notifications' ? '' : 'notifications')} className="relative grid size-10 place-items-center rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-800"><Bell size={18} aria-hidden="true" />{!notificationsRead && <span className="absolute right-[9px] top-[8px] size-2 rounded-full border-2 border-white bg-rose-500" />}</button>
           {menu === 'notifications' && <div className="absolute right-0 top-12 z-50 w-[min(330px,calc(100vw-24px))] rounded-2xl border border-slate-200 bg-white p-4 shadow-xl"><div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-900">Notifications</h2><button type="button" onClick={() => setNotificationsRead(true)} className="text-[11px] font-medium text-emerald-800 hover:underline">Mark read</button></div><div className="mt-3 space-y-2.5"><div className="flex gap-2.5 rounded-xl bg-amber-50 p-3"><span className="mt-1 size-2 shrink-0 rounded-full bg-amber-500" /><p className="text-xs leading-5 text-slate-700">One vehicle document is due for review.<span className="mt-0.5 block text-[10px] text-slate-400">Sample reminder · Today</span></p></div><div className="flex gap-2.5 rounded-xl bg-emerald-50 p-3"><span className="mt-1 size-2 shrink-0 rounded-full bg-emerald-500" /><p className="text-xs leading-5 text-slate-700">A new sample booking was added to the demo workspace.<span className="mt-0.5 block text-[10px] text-slate-400">Demo notification · Today</span></p></div></div><p className="mt-3 text-[10px] text-slate-400">Illustrative notifications only.</p></div>}
         </div>
+
         <div className="mx-0.5 h-7 w-px bg-slate-200 sm:mx-1" />
+
+        {/* Profile Menu */}
         <div className="relative">
           <button type="button" aria-label="Open profile menu" aria-expanded={menu === 'profile'} onClick={() => setMenu(menu === 'profile' ? '' : 'profile')} className="flex items-center gap-2 rounded-xl p-1 hover:bg-slate-50">
             <span className="grid size-8 place-items-center rounded-xl bg-[#D8F4E7] text-[10px] font-bold text-[#123B2D]">{currentDemoRole.slice(0, 2).toUpperCase()}</span>
@@ -122,8 +131,6 @@ function Topbar({ onOpenMobileSidebar }) {
             <button type="button" onClick={() => { sessionStorage.removeItem('wavygo-demo-access'); setMenu(''); navigate('/login') }} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs text-slate-600 hover:bg-rose-50 hover:text-rose-700"><LogOut size={15} />Exit demo workspace</button>
           </div>}
         </div>
-        <button type="button" aria-label="Help" onClick={() => setMenu(menu === 'help' ? '' : 'help')} className="hidden size-9 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-700 xl:grid"><CircleHelp size={18} aria-hidden="true" /></button>
-        {menu === 'help' && <div className="absolute right-4 top-[60px] z-50 max-w-[260px] rounded-xl border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600 shadow-xl">This is an interactive demo workspace. No live services or support integrations are connected.</div>}
       </div>
     </header>
   )

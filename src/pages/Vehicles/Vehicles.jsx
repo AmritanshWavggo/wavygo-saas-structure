@@ -3,6 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { useDemoData } from '../../data/DemoDataContext.jsx'
+import { vehicleService } from '../../services/vehicleService.js'
+import { maintenanceService } from '../../services/maintenanceService.js'
 import {
   ArrowDownUp,
   CalendarDays,
@@ -16,7 +18,10 @@ import {
   Search,
   SlidersHorizontal,
   Trash2,
+  Wrench,
   X,
+  Check,
+  Loader2,
 } from 'lucide-react'
 
 const AVAILABILITY_OPTIONS = ['Available', 'Rented', 'Maintenance']
@@ -257,6 +262,10 @@ function Vehicles() {
   const [availabilityFilter, setAvailabilityFilter] =
     useState('All availability')
   const [selectedVehicle, setSelectedVehicle] = useState(null)
+  const [editingVehicle, setEditingVehicle] = useState(null)
+  const [editFormData, setEditFormData] = useState({})
+  const [editError, setEditError] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
   const [notice, setNotice] = useState('')
   const [page, setPage] = useState(1)
 
@@ -316,7 +325,7 @@ function Vehicles() {
     offline: vehicles.filter((vehicle) => !isListedOnWavyGo(vehicle)).length,
   }
 
-  function toggleStatus(id) {
+  async function toggleStatus(id) {
     const vehicle = vehicles.find((item) => item.id === id)
     if (!vehicle) return
 
@@ -529,7 +538,22 @@ function Vehicles() {
           </label>
         </div>
 
-        {filteredVehicles.length ? (
+        {vehiclesError && vehicles.length > 0 && (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900">
+            <p>Could not refresh vehicles: {vehiclesError}. Showing the last loaded results.</p>
+            <button type="button" onClick={() => syncVehicles({ force: true })} className="font-semibold underline">Retry</button>
+          </div>
+        )}
+
+        {vehiclesLoading && vehicles.length === 0 ? (
+          <div role="status" className="px-5 py-16 text-center text-sm text-slate-500">Loading vehicles…</div>
+        ) : vehiclesError && vehicles.length === 0 ? (
+          <div className="px-5 py-16 text-center sm:py-20">
+            <h3 role="alert" className="text-base font-semibold text-rose-800">Could not load vehicles</h3>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">{vehiclesError}</p>
+            <button type="button" onClick={() => syncVehicles({ force: true })} className="mt-4 text-sm font-semibold text-emerald-800 hover:text-emerald-950">Retry</button>
+          </div>
+        ) : filteredVehicles.length ? (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[850px] border-collapse text-left">
               <thead>
@@ -679,6 +703,13 @@ function Vehicles() {
                 })}
               </tbody>
             </table>
+          </div>
+        ) : vehicles.length === 0 ? (
+          <div className="px-5 py-16 text-center sm:py-20">
+            <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-emerald-50 text-emerald-800"><CarFront size={22} /></span>
+            <h3 className="mt-4 text-base font-semibold text-slate-900">No vehicles in your fleet yet</h3>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm leading-6 text-slate-500">Add a vehicle to see it listed here.</p>
+            <button type="button" onClick={() => navigate('/app/vehicles/new')} className="mt-4 text-sm font-semibold text-emerald-800 hover:text-emerald-950">Add vehicle</button>
           </div>
         ) : (
           <div className="px-5 py-16 text-center sm:py-20">

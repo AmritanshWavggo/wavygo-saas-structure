@@ -21,7 +21,7 @@ function VendorLayout() {
           <Outlet />
           <footer className="mx-auto mt-10 flex max-w-[1680px] flex-wrap items-center justify-between gap-2 border-t border-slate-200/80 pt-4 text-[10px] text-slate-400">
             <span>WavyGo Vendor workspace</span>
-            <span>Interactive demo · Sample data only · Not connected to production services</span>
+            <span>Connected to Local Backend & MongoDB</span>
           </footer>
         </main>
       </div>

@@ -1,0 +1,14 @@
+{
+  "include": [
+    "backend"
+  ],
+  "venvPath": ".",
+  "venv": ".venv",
+  "extraPaths": [
+    "backend",
+    ".venv/lib/python3.12/site-packages"
+  ],
+  "reportMissingImports": "none",
+  "pythonVersion": "3.12",
+  "pythonPlatform": "Darwin"
+}

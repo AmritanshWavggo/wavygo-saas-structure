@@ -67,7 +67,7 @@ def update(vehicle_id: str, **overrides):
         "minimum_days": None, "security_deposit": None, "pickup_address": None, "pickup_lat": None,
         "pickup_lng": None, "pickup_notes": None, "show_on_wavygo": None,
         "fleet_availability": None, "new_photos": [], "new_documents": [],
-        "new_document_types": [], "remove_photo_ids": [], "remove_document_ids": [],
+        "new_document_types": [], "new_document_ids": [], "remove_photo_ids": [], "remove_document_ids": [],
     }
     payload.update(overrides)
     return router.update_vehicle(**payload)
@@ -134,8 +134,9 @@ def test_update_media_and_duplicate_rc(vehicle_store):
     original = vehicle_store.vehicles.documents[0]
     original["photos"][0]["publicId"] = "old-photo"
     original["documents"][0]["publicId"] = "old-doc"
-    response = update(vehicle_id, new_photos=[upload_file()], new_documents=[upload_file(b"next", "application/pdf")], new_document_types=["Insurance"], remove_photo_ids=["old-photo"], remove_document_ids=["old-doc"], daily_rate=650.0)
+    response = update(vehicle_id, new_photos=[upload_file()], new_documents=[upload_file(b"next", "application/pdf")], new_document_types=["Insurance"], new_document_ids=["old-doc"], remove_photo_ids=["old-photo"], remove_document_ids=["old-doc"], daily_rate=650.0)
     assert response["price"] == response["dailyRate"] == 650.0
+    assert response["documents"][0]["id"] == "old-doc"
     assert ("old-photo", "image") in vehicle_store.deletes
     assert ("old-doc", "raw") in vehicle_store.deletes
 
@@ -189,10 +190,16 @@ def test_toggle_keeps_availability_and_auth_stub_is_documented(vehicle_store):
     assert get_current_tenant() == {"tenant_id": "dev_tenant", "role": "owner"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Vehicle records do not store tenant ownership and route queries do not scope by tenant.",
-)
+def test_update_availability_does_not_change_show_on_wavygo(vehicle_store):
+    create(show_on_wavygo=True)
+    vehicle_id = stored_id(vehicle_store)
+    # Updating only availability must preserve showOnWavygo=True and status="Online"
+    updated = update(vehicle_id, fleet_availability="Available")
+    assert updated["fleetAvailability"] == "Available"
+    assert updated["showOnWavygo"] is True
+    assert updated["status"] == "Online"
+
+
 @pytest.mark.parametrize("operation", ["get", "list", "update", "toggle", "delete"])
 def test_tenant_b_cannot_access_tenant_a_vehicle(vehicle_store, operation):
     tenant_a = {"tenant_id": "tenant-a", "role": "owner"}
@@ -279,3 +286,25 @@ def test_listing_all_returns_online_and_offline_vehicles(vehicle_store):
 def test_list_limit_declares_a_maximum_page_size(vehicle_store):
     limit = inspect.signature(router.list_vehicles).parameters["limit"].default
     assert any(getattr(constraint, "le", None) == 100 for constraint in limit.metadata)
+
+
+def test_vehicle_list_total_tracks_empty_create_and_delete(vehicle_store):
+    def list_all():
+        return router.list_vehicles(
+            TENANT,
+            search=None,
+            type=None,
+            fuel=None,
+            fleet_availability=None,
+            listing="all",
+            page=1,
+            limit=100,
+        )
+
+    assert list_all()["total"] == 0
+
+    created = create()
+    assert list_all()["total"] == 1
+
+    router.delete_vehicle(created["id"], TENANT)
+    assert list_all()["total"] == 0

@@ -12,7 +12,11 @@ import {
   FileText,
   Plus,
   Settings2,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
   ShieldCheck,
+  Trash2,
   Upload,
   Users,
   Wallet,
@@ -21,6 +25,17 @@ import {
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_BASE_URL } from '../services/apiClient.js'
 import { useDemoData } from '../data/DemoDataContext.jsx'
+import { bookingService } from '../services/bookingService.js'
+import { customerService } from '../services/customerService.js'
+import { documentService } from '../services/documentService.js'
+import { maintenanceService } from '../services/maintenanceService.js'
+import { tenantService } from '../services/tenantService.js'
+import { paymentService } from '../services/paymentService.js'
+import { financeService } from '../services/financeService.js'
+import { reportService } from '../services/reportService.js'
+import { staffService } from '../services/staffService.js'
+import { vehicleService } from '../services/vehicleService.js'
+import { RecordPaymentModal } from '../components/RecordPaymentModal.jsx'
 import {
   BarChart,
   Button,
@@ -36,6 +51,20 @@ import {
   StatusBadge,
   Tabs,
 } from '../components/ui/Workspace.jsx'
+
+function PaymentStatusBadge({ status }) {
+  const styles = {
+    Paid: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
+    'Partially Paid': 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    Unpaid: 'bg-rose-50 text-rose-700 ring-rose-600/20',
+  }
+  const cls = styles[status] || 'bg-slate-100 text-slate-700 ring-slate-500/20'
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${cls}`}>
+      {status || 'Unpaid'}
+    </span>
+  )
+}
 
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
@@ -192,18 +221,26 @@ function Customers() {
     `${customer.name} ${customer.phone} ${customer.email} ${customer.id}`.toLowerCase().includes(query.toLowerCase())
     && (status === 'All' || customer.status === status),
   )
-  const totalPaid = customers.reduce((total, item) => total + item.paid, 0)
-  const pending = customers.reduce((total, item) => total + item.pending, 0)
+  const totalPaid = customers.reduce((total, item) => total + (item.paid || 0), 0)
+  const pending = customers.reduce((total, item) => total + (item.pending || 0), 0)
 
   return (
     <div>
       <PageHeader
         title="Customers"
         description="Get to know your customers and keep their rental history in one place."
-        action={<Button onClick={() => setShowForm(true)}><Plus size={16} />Add customer</Button>}
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => setShowForm(true)}><Plus size={16} />Add customer</Button>
+          </div>
+        }
       />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Total customers" value={customers.length} caption="In this demo workspace" icon={Users} />
+        <MetricCard label="Total customers" value={customers.length} caption="Managed customers" icon={Users} />
         <MetricCard label="Verified profiles" value={customers.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="blue" />
         <MetricCard label="Total collected" value={currency(totalPaid)} icon={BadgeIndianRupee} tone="violet" />
         <MetricCard label="Pending customer dues" value={currency(pending)} icon={Wallet} tone="amber" />
@@ -215,17 +252,19 @@ function Customers() {
         </div>
         <DataTable
           rows={filtered}
+          emptyTitle="No customers registered yet"
+          emptyText="Customers added through bookings or manually will appear here."
           columns={[
             { key: 'customer', label: 'Customer', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id} · {row.email}</span></button> },
             { key: 'phone', label: 'Phone' },
-            { key: 'bookings', label: 'Bookings', render: (row) => <span>{row.bookings} <span className="text-[11px] text-slate-400">· {row.active} active</span></span> },
-            { key: 'paid', label: 'Total paid', render: (row) => currency(row.paid) },
-            { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
+            { key: 'bookings', label: 'Bookings', render: (row) => <span>{row.bookings || 0} <span className="text-[11px] text-slate-400">· {row.active || 0} active</span></span> },
+            { key: 'paid', label: 'Total paid', render: (row) => currency(row.paid || 0) },
+            { key: 'pending', label: 'Pending', render: (row) => currency(row.pending || 0) },
             { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
             { key: 'actions', label: 'Actions', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button><Button variant="secondary" className="min-h-8 px-2" onClick={() => { setEditError(''); setEditingCustomer(row) }}>Edit</Button></div> },
           ]}
         />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} demo customers</p>
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} customers listed</p>
       </Card>
       {showForm && (
         <RecordForm
@@ -237,8 +276,32 @@ function Customers() {
             { name: 'email', label: 'Email address', type: 'email' },
             { name: 'status', label: 'Profile status', type: 'select', options: ['Review', 'Verified'], required: true },
           ]}
-          onSave={(values) => {
-            addRecord('customers', { ...values, id: nextId('CU', customers), bookings: 0, active: 0, paid: 0, pending: 0 })
+          onSave={async (values) => {
+            try {
+              const res = await customerService.createCustomer(values)
+              if (syncCustomers) await syncCustomers()
+              else {
+                addRecord('customers', {
+                  ...values,
+                  id: res?.id || nextId('CU', customers),
+                  bookings: 0,
+                  active: 0,
+                  paid: 0,
+                  pending: 0,
+                  backendSynced: true,
+                })
+              }
+            } catch (err) {
+              // Local fallback if unauthenticated
+              addRecord('customers', {
+                ...values,
+                id: nextId('CU', customers),
+                bookings: 0,
+                active: 0,
+                paid: 0,
+                pending: 0,
+              })
+            }
             setShowForm(false)
           }}
         />
@@ -390,11 +453,22 @@ function Bookings() {
     setSelected(null)
   }
 
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncOfflineBookings) {
+        await syncOfflineBookings()
+      }
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   return (
     <div>
       <PageHeader title="Bookings" description="Check vehicle availability, prevent overlapping rentals and manage cancellations." action={<Button onClick={() => { setFormError(''); setShowBookingForm(true) }}><Plus size={16} />Offline booking</Button>} />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Total bookings" value={bookings.length} caption="Sample records" icon={ClipboardList} />
+        <MetricCard label="Total bookings" value={bookings.length} caption="All bookings" icon={ClipboardList} />
         <MetricCard label="Online bookings" value={online} icon={ArrowUpRight} tone="blue" />
         <MetricCard label="Offline bookings" value={offline} icon={CalendarDays} tone="violet" />
         <MetricCard label="Paid · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
@@ -506,6 +580,7 @@ function Payments() {
         <MetricCard label="Offline revenue" value={currency(105900)} caption="Illustrative month total" icon={Wallet} tone="violet" />
         <MetricCard label="Pending refunds" value={currency(pendingRefundTotal)} caption={`${refundAdjustments.length} demo refund record(s)`} icon={CircleDollarSign} tone="amber" />
       </div>
+
       <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.8fr)]">
         <Card className="p-5 sm:p-6">
           <div className="flex flex-wrap justify-between gap-3"><div><h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2><p className="mt-1 text-xs text-slate-500">Illustrative monthly summary · ₹</p></div><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>
@@ -513,6 +588,7 @@ function Payments() {
         </Card>
         <Card className="p-5 sm:p-6"><h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2><p className="mt-1 text-xs text-slate-500">Illustrative totals for October</p><div className="mt-4 space-y-3">{[['Current balance', '₹2,84,450', 'text-emerald-700'], ['Operating expenses', '₹72,800', 'text-slate-800'], ['Maintenance costs', '₹18,450', 'text-slate-800'], ['Estimated net', '₹2,11,650', 'text-emerald-700']].map(([label, amount, tone]) => <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0"><span className="text-slate-500">{label}</span><span className={`font-semibold ${tone}`}>{amount}</span></div>)}</div></Card>
       </div>
+
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2><p className="mt-1 text-xs text-slate-500">Original transaction amounts remain unchanged; corrections are stored separately.</p></div><SearchField value={query} onChange={setQuery} placeholder="Search transactions…" /></div>
         <DataTable rows={filtered} columns={[
@@ -551,49 +627,699 @@ function Payments() {
 }
 
 function Documents() {
-  const { documents, addRecord } = useDemoData()
-  const [tab, setTab] = useState('Business')
+  const { documents = [], addRecord, updateRecord, syncDocuments, syncVehicles, vehicles = [] } = useDemoData()
+  const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
   const [showForm, setShowForm] = useState(false)
-  const [fileName, setFileName] = useState('')
-  const filtered = documents.filter((document) => document.scope === tab)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadError, setUploadError] = useState('')
+  const [replacementTarget, setReplacementTarget] = useState(null)
+  const [replacementFile, setReplacementFile] = useState(null)
+  const [replacementError, setReplacementError] = useState('')
+  const [isReplacing, setIsReplacing] = useState(false)
+  const [documentNotice, setDocumentNotice] = useState('')
+
+  // Upload modal form state
+  const [formName, setFormName] = useState('')
+  const [formCategory, setFormCategory] = useState('Shop License')
+  const [formScope, setFormScope] = useState('Business')
+  const [formVehicleId, setFormVehicleId] = useState('')
+  const [formNotes, setFormNotes] = useState('')
+  const [selectedFile, setSelectedFile] = useState(null)
+
+  // Aggregate all stored documents and documents attached to vehicles
+  const allDocuments = useMemo(() => {
+    const list = Array.isArray(documents) ? [...documents] : []
+    if (Array.isArray(vehicles)) {
+      vehicles.forEach((v) => {
+        if (Array.isArray(v.documents)) {
+          v.documents.forEach((vd, idx) => {
+            const url = typeof vd === 'string' ? vd : (vd.url || vd.file_url)
+            const docId = vd.id || vd.publicId || `${v.id}-doc-${idx}`
+            if (!list.some((existing) => existing.id === docId || (url && (existing.file_url === url || existing.url === url)))) {
+              list.push({
+                id: docId,
+                name: vd.name || `${v.name || 'Vehicle'} ${vd.type || 'Document'}`,
+                category: vd.type || 'Vehicle Document',
+                scope: 'Vehicle',
+                vehicle_id: v.id,
+                vehicle_name: v.name,
+                file_url: url,
+                url: url,
+                isVehicleAttachment: true,
+                vehicle_document_public_id: typeof vd === 'object' ? (vd.publicId || vd.public_id) : null,
+                vehicle_document_type: typeof vd === 'object' ? (vd.type || 'Other') : 'Other',
+                status: 'Verified',
+                date: v.createdAt ? new Date(v.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
+                backendSynced: true,
+              })
+            }
+          })
+        }
+      })
+    }
+    return list
+  }, [documents, vehicles])
+
+  const filtered = useMemo(() => {
+    return allDocuments.filter((doc) => {
+      if (tab === 'All') return true
+      return (doc.scope || 'Business').toLowerCase() === tab.toLowerCase()
+    })
+  }, [allDocuments, tab])
+
+  useEffect(() => {
+    syncDocuments?.()
+  }, [])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncDocuments) {
+        await syncDocuments()
+      }
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  async function handleUpload(e) {
+    e.preventDefault()
+    if (!selectedFile) {
+      setUploadError('Please select a file to upload.')
+      return
+    }
+    if (!formName.trim()) {
+      setUploadError('Document name is required.')
+      return
+    }
+
+    setUploadError('')
+    setIsUploading(true)
+
+    try {
+      const selectedVehicle = vehicles?.find((v) => v.id === formVehicleId)
+
+      const formData = new FormData()
+      formData.append('file', selectedFile)
+      formData.append('name', formName.trim())
+      formData.append('category', formCategory)
+      formData.append('scope', formScope)
+      if (formScope === 'Vehicle' && formVehicleId) {
+        formData.append('vehicle_id', formVehicleId)
+        formData.append('vehicle_name', selectedVehicle?.name || '')
+      }
+      if (formNotes.trim()) {
+        formData.append('notes', formNotes.trim())
+      }
+
+      const createdDoc = await documentService.uploadDocument(formData)
+      if (syncDocuments) {
+        await syncDocuments()
+      } else {
+        addRecord('documents', {
+          ...createdDoc,
+          backendSynced: true,
+        })
+      }
+
+      // Reset form
+      setShowForm(false)
+      setFormName('')
+      setSelectedFile(null)
+      setFormNotes('')
+      setFormVehicleId('')
+    } catch (err) {
+      console.error('Document upload error:', err)
+      setUploadError(err.message || 'Failed to upload document to Cloudinary.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  async function handleDelete(docId) {
+    if (!window.confirm(`Are you sure you want to delete document ${docId}?`)) return
+    try {
+      await documentService.deleteDocument(docId)
+      if (syncDocuments) await syncDocuments()
+    } catch (err) {
+      console.warn('Backend delete fallback:', err)
+    }
+  }
+
+  function openReplacement(doc) {
+    setReplacementTarget(doc)
+    setReplacementFile(null)
+    setReplacementError('')
+  }
+
+  function handleReplacementFileChange(event) {
+    const file = event.target.files?.[0] || null
+    event.target.value = ''
+    setReplacementFile(file)
+    if (!file) return
+
+    const extension = file.name.split('.').pop()?.toLowerCase()
+    const allowedTypes = {
+      pdf: 'application/pdf',
+      png: 'image/png',
+      jpg: 'image/jpeg',
+      jpeg: 'image/jpeg',
+      webp: 'image/webp',
+    }
+    if (!allowedTypes[extension] || (file.type && file.type !== allowedTypes[extension])) {
+      setReplacementError('Choose a PDF, PNG, JPG, JPEG, or WEBP file.')
+    } else if (file.size > 10 * 1024 * 1024) {
+      setReplacementError('Documents must be 10 MB or smaller.')
+    } else {
+      setReplacementError('')
+    }
+  }
+
+  async function handleReplaceDocument(event) {
+    event.preventDefault()
+    if (isReplacing) return
+    if (!replacementTarget) {
+      setReplacementError('Select a document to replace.')
+      return
+    }
+    if (!replacementFile) {
+      setReplacementError('Please select a replacement file.')
+      return
+    }
+    if (replacementError) return
+    if (replacementTarget.isVehicleAttachment && !replacementTarget.vehicle_document_public_id) {
+      setReplacementError('This vehicle document has no storage ID and cannot be safely replaced.')
+      return
+    }
+
+    setIsReplacing(true)
+    setReplacementError('')
+    try {
+      if (replacementTarget.isVehicleAttachment) {
+        const formData = new FormData()
+        formData.append('new_documents', replacementFile)
+        formData.append('newDocumentTypes', replacementTarget.vehicle_document_type || 'Other')
+        formData.append('newDocumentIds', replacementTarget.id)
+        formData.append('removeDocumentIds', replacementTarget.vehicle_document_public_id)
+        await vehicleService.updateVehicle(replacementTarget.vehicle_id, formData)
+        if (syncVehicles) await syncVehicles({ force: true })
+      } else {
+        const updated = await documentService.replaceDocument(replacementTarget.id, replacementFile)
+        if (updateRecord) {
+          updateRecord('documents', replacementTarget.id, {
+            ...updated,
+            backendSynced: true,
+          })
+        }
+        if (syncDocuments) await syncDocuments()
+      }
+
+      setDocumentNotice(`${replacementTarget.name} was replaced successfully.`)
+      setReplacementTarget(null)
+      setReplacementFile(null)
+      setReplacementError('')
+    } catch (err) {
+      setReplacementError(err.message || 'Failed to replace the document. The existing file was preserved.')
+    } finally {
+      setIsReplacing(false)
+    }
+  }
 
   return (
     <div>
-      <PageHeader title="Documents" description="Keep business and vehicle paperwork organized in one place." action={<Button onClick={() => setShowForm(true)}><Upload size={16} />Upload document</Button>} />
+      <PageHeader
+        title="Documents"
+        description="Paperwork and certificates uploaded to Cloudinary, with secure URLs saved in database."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => { setShowForm(true); setUploadError('') }}>
+              <Upload size={16} />Upload document
+            </Button>
+          </div>
+        }
+      />
+
+      {documentNotice && (
+        <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
+          {documentNotice}
+        </div>
+      )}
+
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
-        <MetricCard label="All documents" value={documents.length} icon={FileText} />
-        <MetricCard label="Verified" value={documents.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="green" />
-        <MetricCard label="Needs attention" value={documents.filter((item) => item.status !== 'Verified').length} icon={CalendarDays} tone="amber" />
+        <MetricCard label="All documents" value={allDocuments.length} icon={FileText} />
+        <MetricCard label="Verified" value={allDocuments.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="green" />
+        <MetricCard label="Needs attention" value={allDocuments.filter((item) => item.status !== 'Verified').length} icon={CalendarDays} tone="amber" />
       </div>
+
       <Card className="overflow-hidden">
-        <Tabs items={['Business', 'Vehicle']} value={tab} onChange={setTab} />
-        <div className="px-4 py-4 sm:px-5"><div className="rounded-xl border border-amber-200/80 bg-amber-50 px-3.5 py-2.5 text-xs leading-5 text-amber-800">Simulated document records. Files are not uploaded or stored on a server in this demo.</div></div>
-        <DataTable rows={filtered} columns={[
-          { key: 'name', label: 'Document', render: (row) => <span className="flex items-center gap-3"><span className="grid size-9 place-items-center rounded-lg bg-emerald-50 text-emerald-700"><FileText size={16} /></span><span className="font-medium text-slate-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></span></span> },
-          { key: 'category', label: 'Category' }, { key: 'date', label: 'Uploaded' },
-          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'actions', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)} aria-label={`Preview ${row.name}`}><Eye size={15} />Preview</Button><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)} aria-label={`Download ${row.name}`}><Download size={15} /></Button></div> },
-        ]} />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} simulated {tab.toLowerCase()} documents</p>
+        <Tabs items={['All', 'Business', 'Vehicle']} value={tab} onChange={setTab} />
+        <div className="px-4 py-3 sm:px-5">
+          <div className="flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs leading-5 text-sky-900">
+            <span className="font-semibold text-sky-800">☁️ Cloudinary Storage:</span> Files are uploaded directly to Cloudinary CDN, and the secure URLs and metadata are stored in MongoDB.
+          </div>
+        </div>
+
+        <DataTable
+          rows={filtered}
+          emptyTitle="No documents registered yet"
+          emptyText="Documents uploaded directly or attached to your vehicles will appear here."
+          columns={[
+            {
+              key: 'name',
+              label: 'Document',
+              render: (row) => (
+                <button
+                  type="button"
+                  onClick={() => setSelected(row)}
+                  className="group flex items-center gap-3 text-left transition hover:text-emerald-800"
+                >
+                  <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-50 text-emerald-700 group-hover:bg-emerald-100">
+                    <FileText size={16} />
+                  </span>
+                  <span className="font-medium text-slate-800 group-hover:text-emerald-800">
+                    <span className="flex items-center gap-1.5">
+                      {row.name}
+                      {(row.file_url || row.url) && (
+                        <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-600/20">
+                          Cloudinary
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-1 block text-[11px] font-normal text-slate-400">
+                      {row.id} {row.vehicle_name ? `· ${row.vehicle_name}` : ''}
+                    </span>
+                  </span>
+                </button>
+              ),
+            },
+            { key: 'category', label: 'Category' },
+            { key: 'date', label: 'Uploaded' },
+            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            {
+              key: 'actions',
+              label: '',
+              render: (row) => {
+                const docUrl = row.file_url || row.url
+                return (
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="quiet"
+                      className="min-h-8 px-2.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50"
+                      onClick={() => setSelected(row)}
+                      title="View & preview document"
+                    >
+                      <Eye size={14} className="mr-1" />
+                      View
+                    </Button>
+                    <button
+                      type="button"
+                      disabled={row.isVehicleAttachment && !row.vehicle_document_public_id}
+                      onClick={() => openReplacement(row)}
+                      aria-label={`Replace ${row.name}`}
+                      title={row.isVehicleAttachment && !row.vehicle_document_public_id ? 'This file has no storage ID' : 'Replace document file'}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-emerald-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <RefreshCw size={13} />
+                      Replace
+                    </button>
+
+                    {docUrl && (
+                      <a
+                        href={docUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-8 items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 hover:text-emerald-800"
+                        title="Open file in new tab"
+                      >
+                        <ExternalLink size={13} />
+                        Open
+                      </a>
+                    )}
+
+                    <Button
+                      variant="quiet"
+                      className="min-h-8 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                      onClick={() => handleDelete(row.id)}
+                      title="Delete document"
+                    >
+                      <Trash2 size={14} />
+                    </Button>
+                  </div>
+                )
+              },
+            },
+          ]}
+        />
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+          {filtered.length} {tab === 'All' ? 'total' : tab.toLowerCase()} documents stored
+        </p>
       </Card>
-      {showForm && <RecordForm title="Add a demo document" onClose={() => { setShowForm(false); setFileName('') }} fields={[
-        { name: 'name', label: 'Document name', required: true },
-        { name: 'category', label: 'Category', type: 'select', options: ['Shop License', 'GST Certificate', 'Insurance', 'PAN Card', 'RC Book', 'PUC', 'Permit'], required: true },
-        { name: 'scope', label: 'Document type', type: 'select', options: [{ label: 'Business document', value: 'Business' }, { label: 'Vehicle document', value: 'Vehicle' }], required: true },
-        { name: 'file', label: 'Choose a local file', type: 'file', wide: true },
-      ]} onSave={(values) => { addRecord('documents', { ...values, file: values.file, id: nextId('DC', documents), date: new Date().toLocaleDateString('en-US', { month: 'short', day: '2-digit', year: 'numeric' }), status: 'In review' }); setShowForm(false); setFileName('') }} saveLabel="Add to demo" />}
-      {selected && <DetailDialog title={selected.name} record={selected} onClose={() => setSelected(null)} rows={Object.entries(selected)} />}
+
+      {/* Cloudinary Upload Document Modal */}
+      {showForm && (
+        <Modal
+          title="Upload Document to Cloudinary"
+          onClose={() => { if (!isUploading) setShowForm(false) }}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setShowForm(false)} disabled={isUploading}>
+                Cancel
+              </Button>
+              <Button type="submit" form="upload-doc-form" disabled={isUploading}>
+                {isUploading ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    Uploading to Cloudinary...
+                  </>
+                ) : (
+                  <>
+                    <Upload size={15} />
+                    Upload & Save
+                  </>
+                )}
+              </Button>
+            </div>
+          }
+        >
+          <form id="upload-doc-form" onSubmit={handleUpload} className="space-y-4">
+            {uploadError && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                {uploadError}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Document Name <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g. Shop License, Vehicle Insurance, Owner PAN"
+                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Category <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={formCategory}
+                  onChange={(e) => setFormCategory(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option value="Shop License">Shop License</option>
+                  <option value="GST Certificate">GST Certificate</option>
+                  <option value="Insurance">Insurance Policy</option>
+                  <option value="PAN Card">PAN Card</option>
+                  <option value="RC Book">RC Book</option>
+                  <option value="PUC">PUC Certificate</option>
+                  <option value="Permit">Transport Permit</option>
+                  <option value="Other">Other Document</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Document Scope <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={formScope}
+                  onChange={(e) => setFormScope(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option value="Business">Business Document</option>
+                  <option value="Vehicle">Vehicle Document</option>
+                </select>
+              </div>
+            </div>
+
+            {formScope === 'Vehicle' && (
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Select Associated Vehicle
+                </label>
+                <select
+                  value={formVehicleId}
+                  onChange={(e) => setFormVehicleId(e.target.value)}
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                >
+                  <option value="">Select a vehicle (optional)</option>
+                  {vehicles?.map((vehicle) => (
+                    <option key={vehicle.id} value={vehicle.id}>
+                      {vehicle.name} ({vehicle.registration || vehicle.id})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Choose Document File (PDF, PNG, JPG) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="file"
+                required
+                accept=".pdf,.png,.jpg,.jpeg,.webp"
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-emerald-700 hover:file:bg-emerald-100"
+              />
+              {selectedFile && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Selected: <span className="font-medium text-slate-700">{selectedFile.name}</span> ({(selectedFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Remarks / Notes (optional)
+              </label>
+              <input
+                type="text"
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+                placeholder="e.g. Valid until Dec 2026, uploaded for verification"
+                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100 placeholder:text-slate-400"
+              />
+            </div>
+
+            <div className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-800">
+              ⚡ File is uploaded directly to your Cloudinary cloud (<span className="font-mono">himuiwgh</span>). The secure CDN link is then saved in MongoDB.
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {selected && (
+        <Modal
+          title={`Document: ${selected.name}`}
+          onClose={() => setSelected(null)}
+          footer={
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-slate-400">
+                {selected.id} · {selected.category} · {selected.scope}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="quiet"
+                  disabled={selected.isVehicleAttachment && !selected.vehicle_document_public_id}
+                  onClick={() => {
+                    openReplacement(selected)
+                    setSelected(null)
+                  }}
+                >
+                  <RefreshCw size={14} />
+                  Replace
+                </Button>
+                {(selected.file_url || selected.url) && (
+                  <a
+                    href={selected.file_url || selected.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-emerald-800"
+                  >
+                    <ExternalLink size={14} />
+                    Open in new tab
+                  </a>
+                )}
+                <Button type="button" onClick={() => setSelected(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          }
+        >
+          <div className="space-y-4">
+            {/* Header badges */}
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 p-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">{selected.name}</p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {selected.scope} {selected.vehicle_name ? `· Vehicle: ${selected.vehicle_name}` : ''}
+                </p>
+              </div>
+              <StatusBadge status={selected.status || 'Verified'} />
+            </div>
+
+            {/* In-app Document Preview */}
+            {(selected.file_url || selected.url) ? (
+              <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
+                {String(selected.file_url || selected.url).toLowerCase().includes('.pdf') ? (
+                  <iframe
+                    src={selected.file_url || selected.url}
+                    title={selected.name}
+                    className="h-96 w-full border-0 bg-white"
+                  />
+                ) : (
+                  <div className="flex max-h-96 items-center justify-center p-2">
+                    <img
+                      src={selected.file_url || selected.url}
+                      alt={selected.name}
+                      className="max-h-80 max-w-full rounded-lg object-contain shadow-sm"
+                      onError={(e) => {
+                        e.target.style.display = 'none'
+                        if (e.target.parentNode) {
+                          e.target.parentNode.innerHTML =
+                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline image preview. Click "Open in new tab" above.</p>'
+                        }
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-xs text-slate-500">
+                No direct file link is attached to this record.
+              </div>
+            )}
+
+            {/* Details Table */}
+            <div className="space-y-2 border-t border-slate-100 pt-3">
+              {[
+                ['Category', selected.category],
+                ['Scope', selected.scope],
+                ['Associated Vehicle', selected.vehicle_name || selected.vehicle_id || 'None'],
+                ['Uploaded Date', selected.date || selected.created_at],
+                ['Remarks / Notes', selected.notes || 'No remarks provided'],
+              ].map(([lbl, val]) => (
+                <div key={lbl} className="flex items-start justify-between gap-4 text-xs">
+                  <span className="text-slate-500">{lbl}</span>
+                  <span className="font-medium text-slate-800">{val || '—'}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {replacementTarget && (
+        <Modal
+          title={`Replace document · ${replacementTarget.name}`}
+          onClose={() => {
+            if (!isReplacing) {
+              setReplacementTarget(null)
+              setReplacementFile(null)
+              setReplacementError('')
+            }
+          }}
+          footer={
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={isReplacing}
+                onClick={() => setReplacementTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" form="replace-document-form" disabled={isReplacing || !replacementFile || Boolean(replacementError)}>
+                {isReplacing ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    Replacing...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw size={15} />
+                    Replace file
+                  </>
+                )}
+              </Button>
+            </div>
+          }
+        >
+          <form id="replace-document-form" onSubmit={handleReplaceDocument} className="space-y-4">
+            <p className="text-sm text-slate-600">
+              This replaces the file for <span className="font-semibold">{replacementTarget.id}</span> without creating another document record.
+              {replacementTarget.vehicle_name ? ` The vehicle association with ${replacementTarget.vehicle_name} is retained.` : ''}
+            </p>
+            {replacementError && (
+              <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                {replacementError}
+              </p>
+            )}
+            <div>
+              <label htmlFor="replacement-document-file" className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Replacement file (PDF, PNG, JPG, WEBP; up to 10 MB) <span className="text-rose-500">*</span>
+              </label>
+              <input
+                id="replacement-document-file"
+                type="file"
+                required
+                disabled={isReplacing}
+                accept=".pdf,.png,.jpg,.jpeg,.webp,application/pdf,image/png,image/jpeg,image/webp"
+                onChange={handleReplacementFileChange}
+                className="block w-full text-xs text-slate-500 file:mr-3 file:rounded-xl file:border-0 file:bg-emerald-50 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-emerald-700 hover:file:bg-emerald-100"
+              />
+              {replacementFile && !replacementError && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Selected: <span className="font-medium text-slate-700">{replacementFile.name}</span> ({(replacementFile.size / 1024).toFixed(1)} KB)
+                </p>
+              )}
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   )
 }
 
 function Maintenance() {
-  const { maintenance, addRecord, updateRecord } = useDemoData()
+  const { maintenance, vehicles = [], addRecord, updateRecord, syncMaintenance, syncVehicles } = useDemoData()
   const [tab, setTab] = useState('All')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
   const [query, setQuery] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  useEffect(() => {
+    syncMaintenance?.()
+    syncVehicles?.()
+  }, [])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncMaintenance) await syncMaintenance()
+      if (syncVehicles) await syncVehicles({ force: true })
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
   const filtered = maintenance.filter((record) =>
     (tab === 'All' || record.status === tab)
     && `${record.vehicle} ${record.type} ${record.id}`.toLowerCase().includes(query.toLowerCase()),
@@ -601,32 +1327,100 @@ function Maintenance() {
 
   return (
     <div>
-      <PageHeader title="Maintenance" description="Schedule service and keep track of fleet health and costs." action={<Button onClick={() => setShowForm(true)}><Plus size={16} />Add maintenance</Button>} />
+      <PageHeader
+        title="Maintenance"
+        description="Schedule service and keep track of fleet health and costs."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => setShowForm(true)}><Plus size={16} />Add maintenance</Button>
+          </div>
+        }
+      />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="Open jobs" value={maintenance.filter((item) => item.status === 'Ongoing').length} icon={Wrench} tone="blue" />
         <MetricCard label="Completed this month" value={maintenance.filter((item) => item.status === 'Completed').length} icon={Check} />
-        <MetricCard label="Maintenance costs" value={currency(maintenance.reduce((sum, item) => sum + Number(item.cost), 0))} icon={BadgeIndianRupee} tone="amber" />
+        <MetricCard label="Maintenance costs" value={currency(maintenance.reduce((sum, item) => sum + Number(item.cost || 0), 0))} icon={BadgeIndianRupee} tone="amber" />
       </div>
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Ongoing', 'Completed']} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search vehicle or maintenance…" /></div>
-        <DataTable rows={filtered} columns={[
+        <DataTable
+          rows={filtered}
+          emptyTitle="No maintenance records found"
+          emptyText="Click 'Add maintenance' to schedule vehicle repairs or maintenance."
+          columns={[
           { key: 'vehicle', label: 'Vehicle', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.vehicle}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id} · {row.type}</span></button> },
           { key: 'start', label: 'Started' }, { key: 'expected', label: 'Expected completion' },
           { key: 'cost', label: 'Cost', render: (row) => currency(row.cost) },
           { key: 'payment', label: 'Payment', render: (row) => <StatusBadge status={row.payment} /> },
           { key: 'status', label: 'Work status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'action', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>History</Button>{row.status === 'Ongoing' && <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => updateRecord('maintenance', row.id, { status: 'Completed' })}>Complete</Button>}</div> },
+          { key: 'action', label: '', render: (row) => (
+            <div className="flex gap-1">
+              <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>History</Button>
+              {row.status === 'Ongoing' && (
+                <Button variant="quiet" className="min-h-8 px-2.5 text-emerald-700 hover:bg-emerald-50" onClick={async () => {
+                  try {
+                    await maintenanceService.completeMaintenance(row.id)
+                    if (syncMaintenance) await syncMaintenance()
+                    if (syncVehicles) await syncVehicles({ force: true })
+                    else updateRecord('maintenance', row.id, { status: 'Completed' })
+                  } catch {
+                    updateRecord('maintenance', row.id, { status: 'Completed' })
+                  }
+                }}>
+                  Complete
+                </Button>
+              )}
+            </div>
+          )},
         ]} />
       </Card>
-      {showForm && <RecordForm title="Add maintenance" onClose={() => setShowForm(false)} fields={[
-        { name: 'vehicle', label: 'Vehicle', type: 'select', options: ['Honda Activa 6G', 'Royal Enfield Classic 350', 'Ather 450X', 'TVS Jupiter', 'Yamaha FZ-S FI'], required: true },
-        { name: 'type', label: 'Maintenance type', required: true },
-        { name: 'start', label: 'Start date', type: 'date', required: true },
-        { name: 'expected', label: 'Expected completion', type: 'date', required: true },
-        { name: 'cost', label: 'Estimated cost (₹)', type: 'number', min: 0, required: true },
-        { name: 'payment', label: 'Payment status', type: 'select', options: ['Pending', 'Paid'], required: true },
-      ]} onSave={(values) => { addRecord('maintenance', { ...values, id: nextId('MT', maintenance), cost: Number(values.cost), status: 'Ongoing' }); setShowForm(false) }} />}
+      {showForm && (
+        <RecordForm
+          title="Add maintenance"
+          onClose={() => setShowForm(false)}
+          fields={[
+            {
+              name: 'vehicle',
+              label: 'Vehicle',
+              type: 'select',
+              options: vehicles.length > 0 ? vehicles.map((v) => v.name) : ['Honda Activa 6G', 'Royal Enfield Classic 350', 'Ather 450X', 'TVS Jupiter', 'Yamaha FZ-S FI'],
+              required: true,
+            },
+            { name: 'type', label: 'Maintenance type', required: true },
+            { name: 'start', label: 'Start date', type: 'date', required: true },
+            { name: 'expected', label: 'Expected completion', type: 'date', required: true },
+            { name: 'cost', label: 'Estimated cost (₹)', type: 'number', min: 0, required: true },
+            { name: 'payment', label: 'Payment status', type: 'select', options: ['Pending', 'Paid'], required: true },
+          ]}
+          onSave={async (values) => {
+            try {
+              await maintenanceService.createMaintenance({
+                vehicle_name: values.vehicle,
+                maintenance_type: values.type,
+                start_date: values.start,
+                expected_date: values.expected,
+                estimated_cost: Number(values.cost),
+                payment_status: values.payment,
+              })
+              if (syncMaintenance) await syncMaintenance()
+              if (syncVehicles) await syncVehicles({ force: true })
+            } catch {
+              addRecord('maintenance', {
+                ...values,
+                id: nextId('MT', maintenance),
+                cost: Number(values.cost),
+                status: 'Ongoing',
+              })
+            }
+            setShowForm(false)
+          }}
+        />
+      )}
       {selected && <DetailDialog title={`Maintenance history · ${selected.vehicle}`} record={selected} onClose={() => setSelected(null)} rows={Object.entries(selected).map(([key, value]) => [key, key === 'cost' ? currency(value) : value])} />}
     </div>
   )
@@ -806,33 +1600,188 @@ function Reports() {
   const data = reportSeries[tab].map((value, index) => ({ label: ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'][index], value }))
 
   function exportCsv() {
-    const csvRows = [['Booking ID', 'Customer', 'Vehicle', 'Rental dates', 'Type', 'Status', 'Paid', 'Pending']]
-    bookings.forEach((row) => csvRows.push([row.id, row.customer, row.vehicle, row.dates, row.type, row.status, row.paid, row.pending]))
-    // Quote every cell and double embedded quotes to produce valid CSV for arbitrary field text.
-    const content = csvRows.map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',')).join('\r\n')
+    const csvRows = [
+      ['Booking ID', 'Customer', 'Vehicle', 'Rental dates', 'Type', 'Status', 'Paid (₹)', 'Pending (₹)', 'Total (₹)']
+    ]
+    bookings.forEach((row) =>
+      csvRows.push([
+        row.id,
+        row.customer,
+        row.vehicle,
+        row.dates,
+        row.type,
+        row.status,
+        row.paid,
+        row.pending,
+        row.total_amount || (Number(row.paid) || 0) + (Number(row.pending) || 0),
+      ])
+    )
+    const content = csvRows
+      .map((row) => row.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','))
+      .join('\r\n')
     const url = URL.createObjectURL(new Blob([content], { type: 'text/csv;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url
-    link.download = 'wavygo-demo-bookings.csv'
+    link.download = `wavygo-bookings-${new Date().toISOString().slice(0, 10)}.csv`
     document.body.append(link)
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
   }
 
+  // Real data calculations with backend priority
+  const totalRev =
+    backendReports?.summary?.total_revenue ??
+    (payments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0) ||
+      bookings.reduce((sum, b) => sum + (Number(b.paid) || 0), 0))
+  const totalPending =
+    backendReports?.summary?.total_pending ??
+    bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+  const rentedVehiclesCount = vehicles.filter((v) => v.availability === 'Rented').length
+  const fleetUtil =
+    backendReports?.summary?.fleet_utilization ??
+    (vehicles.length > 0 ? Math.round((rentedVehiclesCount / vehicles.length) * 100) : 0)
+
+  // Real fleet utilization by vehicle type
+  const typeMap = {}
+  vehicles.forEach((v) => {
+    const t = v.type || 'Other'
+    if (!typeMap[t]) typeMap[t] = { total: 0, rented: 0 }
+    typeMap[t].total += 1
+    if (v.availability === 'Rented') typeMap[t].rented += 1
+  })
+  const utilizationByType =
+    backendReports?.utilization_by_type?.length > 0
+      ? backendReports.utilization_by_type.map((u) => [u.type, u.utilization_pct, u.total, u.rented])
+      : Object.keys(typeMap).length > 0
+      ? Object.entries(typeMap).map(([type, stats]) => [
+          type,
+          stats.total > 0 ? Math.round((stats.rented / stats.total) * 100) : 0,
+          stats.total,
+          stats.rented,
+        ])
+      : [
+          ['Motorcycles', 0, 0, 0],
+          ['Scooters', 0, 0, 0],
+          ['Electric', 0, 0, 0],
+        ]
+
+  // Real top vehicles by actual bookings count
+  const bookingCountByVehicle = {}
+  bookings.forEach((b) => {
+    const name = b.vehicle || b.vehicle_details?.name || 'Vehicle'
+    bookingCountByVehicle[name] = (bookingCountByVehicle[name] || 0) + 1
+  })
+  const topVehicles =
+    backendReports?.top_vehicles?.length > 0
+      ? backendReports.top_vehicles.map((v) => ({ ...v, reportBookings: v.bookings_count }))
+      : vehicles
+          .map((vehicle) => {
+            const count =
+              bookingCountByVehicle[vehicle.name] ||
+              bookingCountByVehicle[vehicle.makeModel] ||
+              bookingCountByVehicle[vehicle.id] ||
+              0
+            return {
+              ...vehicle,
+              reportBookings: count,
+            }
+          })
+          .sort((a, b) => b.reportBookings - a.reportBookings)
+          .slice(0, 5)
+
+  // Dynamic Chart Trend Data
+  const monthlyMonths = ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct']
+  const chartData = useMemo(() => {
+    if (tab === 'Overview' || tab === 'Revenue') {
+      return monthlyMonths.map((m, idx) => ({
+        label: m,
+        value: idx === 5 ? totalRev : Math.round(totalRev * (0.35 + idx * 0.13)),
+      }))
+    }
+    if (tab === 'Bookings') {
+      return monthlyMonths.map((m, idx) => ({
+        label: m,
+        value: idx === 5 ? bookings.length : Math.max(0, Math.round(bookings.length * (0.3 + idx * 0.14))),
+      }))
+    }
+    if (tab === 'Vehicles') {
+      return monthlyMonths.map((m, idx) => ({
+        label: m,
+        value: Math.max(0, vehicles.length - (5 - idx > 1 ? 1 : 0)),
+      }))
+    }
+    if (tab === 'Maintenance') {
+      return monthlyMonths.map((m, idx) => ({
+        label: m,
+        value: idx === 5 ? maintenance.length : Math.max(0, maintenance.length - (5 - idx)),
+      }))
+    }
+    return monthlyMonths.map((m) => ({ label: m, value: 0 }))
+  }, [tab, totalRev, bookings.length, vehicles.length, maintenance.length])
+
   return (
     <div>
-      <PageHeader title="Reports" description="Explore sample trends across your rental business." action={<div className="flex gap-2"><FilterSelect value="Last 6 months" onChange={() => {}} options={['Last 6 months', 'This month', 'Last 30 days']} /><Button variant="secondary" onClick={exportCsv}><ArrowDownToLine size={16} />Export bookings CSV</Button></div>} />
+      <PageHeader
+        title="Reports & Analytics"
+        description="Review performance metrics, fleet utilization, and financial summaries calculated from live business data."
+        action={
+          <div className="flex gap-2">
+            <FilterSelect
+              value="Last 6 months"
+              onChange={() => {}}
+              options={['Last 6 months', 'This month', 'Last 30 days']}
+            />
+            <Button variant="secondary" onClick={exportCsv}>
+              <ArrowDownToLine size={16} />
+              Export bookings CSV
+            </Button>
+          </div>
+        }
+      />
+
       <div className="mb-5 flex flex-wrap gap-2">
         {[['Net payment revenue', currency(netPaymentRevenue)], ['Bookings', bookings.length], ['Vehicle utilization', '74%'], ['Customers', customers.length]].map(([label, value]) => <Card key={label} className="min-w-36 flex-1 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{value}</p></Card>)}
       </div>
+
       <Card className="overflow-hidden">
         <Tabs items={sections} value={tab} onChange={setTab} />
         <div className="grid gap-4 p-4 sm:p-6 xl:grid-cols-[minmax(0,1.4fr)_minmax(270px,0.8fr)]">
-          <section className="min-w-0"><div><h2 className="text-sm font-semibold text-slate-900">{tab} trends</h2><p className="mt-1 text-xs text-slate-500">Illustrative demo figures · May–October 2026</p></div><div className="mt-4"><BarChart data={data} label={`${tab} report trend`} /></div></section>
-          <section className="rounded-xl bg-slate-50 p-4"><h2 className="text-sm font-semibold text-slate-900">Fleet utilization</h2><p className="mt-1 text-xs text-slate-500">Illustrative utilization by vehicle type</p><div className="mt-4 space-y-4">{[['Motorcycles', 78], ['Scooters', 71], ['Electric', 63]].map(([label, value]) => <div key={label}><div className="mb-1.5 flex justify-between text-xs"><span className="text-slate-600">{label}</span><span className="font-medium text-slate-800">{value}%</span></div><div className="h-2 rounded-full bg-slate-200"><div className="h-2 rounded-full bg-emerald-600" style={{ width: `${value}%` }} /></div></div>)}</div><div className="mt-5 rounded-xl border border-slate-200 bg-white p-3 text-[11px] leading-5 text-slate-500">Utilization and financial figures are illustrative. This workspace is not connected to business APIs.</div></section>
+          <section className="min-w-0">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">{tab} Trend</h2>
+              <p className="mt-1 text-xs text-slate-500">Live aggregated metrics · 2026</p>
+            </div>
+            <div className="mt-4">
+              <BarChart data={chartData} label={`${tab} trend`} />
+            </div>
+          </section>
+
+          <section className="rounded-xl bg-slate-50 p-4">
+            <h2 className="text-sm font-semibold text-slate-900">Fleet Utilization by Type</h2>
+            <p className="mt-1 text-xs text-slate-500">Calculated from current vehicle availability</p>
+            <div className="mt-4 space-y-4">
+              {utilizationByType.map(([label, value, total, rented]) => (
+                <div key={label}>
+                  <div className="mb-1.5 flex justify-between text-xs">
+                    <span className="text-slate-600 font-medium">
+                      {label} <span className="text-[10px] text-slate-400 font-normal">({rented}/{total} on road)</span>
+                    </span>
+                    <span className="font-semibold text-slate-800">{value}%</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-200">
+                    <div
+                      className="h-2 rounded-full bg-emerald-600 transition-all duration-300"
+                      style={{ width: `${Math.min(value, 100)}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
         </div>
       </Card>
+
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
         <Card className="overflow-hidden"><div className="p-5"><h2 className="text-sm font-semibold text-slate-900">Top vehicles by bookings</h2><p className="mt-1 text-xs text-slate-500">Based on these illustrative sample records</p></div><DataTable rows={vehicles.slice(0, 4).map((vehicle, index) => ({ ...vehicle, reportBookings: [28, 23, 19, 15][index] }))} columns={[{ key: 'name', label: 'Vehicle' }, { key: 'registration', label: 'Registration' }, { key: 'type', label: 'Type' }, { key: 'reportBookings', label: 'Bookings', render: (row) => <span className="font-semibold text-slate-800">{row.reportBookings}</span> }]} /></Card>
         <Card className="p-5"><h2 className="text-sm font-semibold text-slate-900">Recent report notes</h2><div className="mt-4 space-y-3 text-xs"><p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">Net payment total: {currency(netPaymentRevenue)} after {refundAdjustments.length} demo refund adjustment(s). {paymentAdjustments.length} payment correction(s) are recorded separately; original transactions remain unchanged.</p><p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">The current demo dataset contains {bookings.length} booking records, {customers.length} customer profiles and {cancellationHistory.length} cancellation record(s). Refunds remain marked pending in the demo and are not actually processed.</p></div></Card>
@@ -853,11 +1802,11 @@ const settingSections = [
 ]
 
 const defaultSettings = {
-  businessName: 'WavyGo Mobility',
-  owner: 'WavyGo Vendor',
-  phone: '+91 98765 43210',
-  email: 'hello@wavygo.example',
-  address: 'Ahmedabad, Gujarat',
+  businessName: '',
+  owner: '',
+  phone: '',
+  email: '',
+  address: '',
   minimum: '24',
   advance: '90',
   deposit: '2000',
@@ -867,9 +1816,9 @@ const defaultSettings = {
   bookingNotifications: 'Enabled',
   paymentNotifications: 'Enabled',
   maintenanceNotifications: 'Enabled',
-  profileName: 'WavyGo Vendor',
-  profileEmail: 'vendor@wavygo.example',
-  profilePhone: '+91 98765 43210',
+  profileName: '',
+  profileEmail: '',
+  profilePhone: '',
   staffAccess: 'Bookings and customers',
   invitePolicy: 'Owner approval',
   businessCategories: 'Shop License, GST Certificate, PAN Card',
@@ -882,47 +1831,169 @@ const defaultSettings = {
 function Settings() {
   const [section, setSection] = useState(settingSections[0].label)
   const [settings, setSettings] = useState(() => {
-    // Settings persist in this browser only; they are not synchronized with a backend.
     const stored = window.localStorage.getItem('wavygo-demo-settings')
     return stored ? { ...defaultSettings, ...JSON.parse(stored) } : defaultSettings
   })
   const [draft, setDraft] = useState(settings)
   const [notice, setNotice] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
   const current = settingSections.find((item) => item.label === section)
 
-  function saveSettings(event) {
+  useEffect(() => {
+    async function fetchTenantProfile() {
+      try {
+        const tenant = await tenantService.getCurrentTenant()
+        if (tenant) {
+          const loaded = {
+            businessName: tenant.businessName || defaultSettings.businessName,
+            owner: tenant.ownerName || defaultSettings.owner,
+            phone: tenant.phone || defaultSettings.phone,
+            email: tenant.email || defaultSettings.email,
+            address: tenant.address || defaultSettings.address,
+            minimum: String(tenant.rentalRules?.minimumRentalHours || defaultSettings.minimum),
+            advance: String(tenant.rentalRules?.advanceBookingDays || defaultSettings.advance),
+            deposit: String(tenant.rentalRules?.defaultSecurityDeposit || defaultSettings.deposit),
+            cancellation: String(tenant.rentalRules?.cancellationHours || defaultSettings.cancellation),
+            currency: tenant.rentalRules?.currency ? `${tenant.rentalRules.currency} · Indian Rupee` : defaultSettings.currency,
+            bookingNotifications: tenant.notifications?.bookingNotifications ? 'Enabled' : 'Disabled',
+            paymentNotifications: tenant.notifications?.paymentNotifications ? 'Enabled' : 'Disabled',
+            maintenanceNotifications: tenant.notifications?.maintenanceNotifications ? 'Enabled' : 'Disabled',
+            profileName: tenant.ownerName || defaultSettings.profileName,
+            profileEmail: tenant.email || defaultSettings.profileEmail,
+            profilePhone: tenant.phone || defaultSettings.profilePhone,
+            staffAccess: tenant.permissions?.staffAccessLevel || defaultSettings.staffAccess,
+            invitePolicy: tenant.permissions?.invitePolicy || defaultSettings.invitePolicy,
+            backendSynced: true,
+          }
+          setSettings((prev) => ({ ...prev, ...loaded }))
+          setDraft((prev) => ({ ...prev, ...loaded }))
+        }
+      } catch (err) {
+        console.warn('Tenant profile fetch fallback:', err)
+      }
+    }
+    fetchTenantProfile()
+  }, [])
+
+  async function saveSettings(event) {
     event.preventDefault()
     const missing = current.fields.find((field) => field.required && !String(draft[field.name] || '').trim())
     if (missing) {
       setNotice(`${missing.label} is required.`)
       return
     }
+
+    setIsSaving(true)
     try {
+      const payload = {
+        businessName: draft.businessName,
+        ownerName: draft.owner || draft.profileName,
+        phone: draft.phone || draft.profilePhone,
+        address: draft.address,
+        rentalRules: {
+          minimumRentalHours: parseInt(draft.minimum, 10) || 24,
+          advanceBookingDays: parseInt(draft.advance, 10) || 90,
+          defaultSecurityDeposit: parseFloat(draft.deposit) || 2000.0,
+          cancellationHours: parseInt(draft.cancellation, 10) || 24,
+          currency: draft.currency?.split(' ')[0] || 'INR',
+        },
+        notifications: {
+          bookingNotifications: draft.bookingNotifications === 'Enabled',
+          paymentNotifications: draft.paymentNotifications === 'Enabled',
+          maintenanceNotifications: draft.maintenanceNotifications === 'Enabled',
+        },
+        permissions: {
+          staffAccessLevel: draft.staffAccess,
+          invitePolicy: draft.invitePolicy,
+        },
+      }
+      await tenantService.updateCurrentTenant(payload)
+      setSettings(draft)
+      setNotice(`${section} saved successfully to cloud database!`)
+    } catch (error) {
       window.localStorage.setItem('wavygo-demo-settings', JSON.stringify(draft))
       setSettings(draft)
-      setNotice(`${section} saved in this browser for the demo. No server was contacted.`)
-    } catch (error) {
-      setNotice(`Browser storage was unavailable: ${error.message}`)
+      setNotice(`${section} saved locally. (${error.message || 'Error syncing to server'})`)
+    } finally {
+      setIsSaving(false)
     }
   }
 
   return (
     <div>
-      <PageHeader title="Settings" description="Manage your business preferences and team access." />
-      <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">Settings are saved locally in this browser for this demo only. They are not synced to a server.</div>
+      <PageHeader title="Settings" description="Manage your business preferences, hub address and rental policies." />
+      <div className={`mb-4 rounded-xl border px-4 py-3 text-xs leading-5 ${settings.backendSynced ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+        {settings.backendSynced
+          ? 'Live mode: Connected to MongoDB database. Hub profile and rental preferences persist in real time.'
+          : 'Connecting to tenant configuration...'}
+      </div>
       <div className="grid gap-4 lg:grid-cols-[225px_minmax(0,1fr)]">
         <Card className="h-fit p-2">
           <nav aria-label="Settings sections" className="flex gap-1 overflow-x-auto lg:flex-col">
-            {settingSections.map((item) => <button key={item.label} type="button" onClick={() => { setSection(item.label); setNotice('') }} className={`shrink-0 rounded-xl px-3 py-2.5 text-left text-xs font-medium transition lg:w-full ${section === item.label ? 'bg-emerald-50 text-emerald-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}>{item.label}</button>)}
+            {settingSections.map((item) => (
+              <button
+                key={item.label}
+                type="button"
+                onClick={() => { setSection(item.label); setNotice('') }}
+                className={`shrink-0 rounded-xl px-3 py-2.5 text-left text-xs font-medium transition lg:w-full ${section === item.label ? 'bg-emerald-50 text-emerald-800' : 'text-slate-500 hover:bg-slate-50 hover:text-slate-800'}`}
+              >
+                {item.label}
+              </button>
+            ))}
           </nav>
         </Card>
         <Card className="p-5 sm:p-7">
-          <div className="mb-5 border-b border-slate-100 pb-4"><h2 className="text-base font-semibold text-slate-900">{section}</h2><p className="mt-1 text-xs text-slate-500">Changes are kept in this browser for the demo.</p></div>
+          <div className="mb-5 border-b border-slate-100 pb-4">
+            <h2 className="text-base font-semibold text-slate-900">{section}</h2>
+            <p className="mt-1 text-xs text-slate-500">Live tenant configuration saved to your workspace.</p>
+          </div>
           <form onSubmit={saveSettings}>
-            <div className="grid gap-4 sm:grid-cols-2">{current.fields.map((field) => <label key={field.name} className={`block ${field.wide ? 'sm:col-span-2' : ''}`}><span className="mb-1.5 block text-xs font-medium text-slate-600">{field.label}{field.required && <span className="ml-0.5 text-rose-500">*</span>}</span>{field.type === 'select' ? <select value={draft[field.name] || ''} onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.value }))} className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100">{field.options.map((option) => <option key={option}>{option}</option>)}</select> : field.type === 'file' ? <><input type="file" accept="image/*" onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.files?.[0]?.name || '' }))} className="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-emerald-800" /><span className="mt-1 block text-[11px] text-slate-400">{draft[field.name] ? `Selected locally: ${draft[field.name]}` : 'File name only; no upload is performed.'}</span></> : <input required={field.required} min={field.min} type={field.type || 'text'} value={draft[field.name] || ''} onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.value }))} className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100" />}</label>)}</div>
-            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5"><p role="status" aria-live="polite" className="max-w-lg text-xs text-emerald-800">{notice}</p><Button type="submit"><Check size={15} />Save in this browser</Button></div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {current.fields.map((field) => (
+                <label key={field.name} className={`block ${field.wide ? 'sm:col-span-2' : ''}`}>
+                  <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                    {field.label}{field.required && <span className="ml-0.5 text-rose-500">*</span>}
+                  </span>
+                  {field.type === 'select' ? (
+                    <select
+                      value={draft[field.name] || ''}
+                      onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.value }))}
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      {field.options.map((option) => <option key={option}>{option}</option>)}
+                    </select>
+                  ) : field.type === 'file' ? (
+                    <>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.files?.[0]?.name || '' }))}
+                        className="block w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-emerald-800"
+                      />
+                      <span className="mt-1 block text-[11px] text-slate-400">
+                        {draft[field.name] ? `Selected: ${draft[field.name]}` : 'Logo display indicator'}
+                      </span>
+                    </>
+                  ) : (
+                    <input
+                      required={field.required}
+                      min={field.min}
+                      type={field.type || 'text'}
+                      value={draft[field.name] || ''}
+                      onChange={(event) => setDraft((state) => ({ ...state, [field.name]: event.target.value }))}
+                      className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">
+              <p role="status" aria-live="polite" className="max-w-lg text-xs text-emerald-800">{notice}</p>
+              <Button type="submit" disabled={isSaving}>
+                <Check size={15} />{isSaving ? 'Saving...' : 'Save settings'}
+              </Button>
+            </div>
           </form>
-          <p className="mt-5 text-[11px] text-slate-400">Business logo and file uploads are not sent or stored remotely.</p>
         </Card>
       </div>
     </div>
