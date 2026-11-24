@@ -7,6 +7,7 @@ import {
   ChevronRight,
   CircleDollarSign,
   Clock3,
+  Loader2,
   MapPin,
   MoreHorizontal,
   Plus,
@@ -45,6 +46,9 @@ function Dashboard() {
     updateRecord,
     syncVehicles,
     syncOfflineBookings,
+    vehiclesTotal,
+    vehiclesLoading,
+    vehiclesError,
   } = useDemoData()
   const [dateRange, setDateRange] = useState('Last 30 days')
   const [backendStats, setBackendStats] = useState(null)
@@ -110,7 +114,7 @@ function Dashboard() {
       await dashboardService.markArrival(arrival.bookingId)
 
       // 4. Re-sync live data from backend
-      if (syncVehicles) await syncVehicles()
+      if (syncVehicles) await syncVehicles({ force: true })
       if (syncOfflineBookings) await syncOfflineBookings()
       const stats = await dashboardService.getStats(dateRange)
       if (stats) setBackendStats(stats)
@@ -122,6 +126,7 @@ function Dashboard() {
   }
 
   useEffect(() => {
+    if (vehiclesLoading) return
     let active = true
     async function loadStats() {
       try {
@@ -137,27 +142,63 @@ function Dashboard() {
     return () => {
       active = false
     }
-  }, [dateRange, bookings.length, vehicles.length, payments.length])
+  }, [dateRange, bookings.length, vehicles, payments.length, vehiclesLoading])
 
   const rentedVehicles = vehicles.filter((v) => v.availability === 'Rented')
   const availableVehicles = vehicles.filter((v) => v.availability === 'Available')
   const activeBookings = bookings.filter((b) => b.status === 'Active')
 
   // Calculations with live backend prioritization
+  const nowForRange = new Date()
+  const rangeStart = (() => {
+    if (dateRange === 'This month') return new Date(nowForRange.getFullYear(), nowForRange.getMonth(), 1)
+    const days = dateRange === 'Last 7 days' ? 7 : dateRange === 'Last 90 days' ? 90 : 30
+    const start = new Date(nowForRange)
+    start.setHours(0, 0, 0, 0)
+    start.setDate(start.getDate() - days + 1)
+    return start
+  })()
+  const recordDateInRange = (record) => {
+    const rawDate = record.created_at || record.date || record.payment_date
+    if (!rawDate) return false
+    const parsed = new Date(rawDate)
+    return !Number.isNaN(parsed.getTime()) && parsed >= rangeStart && parsed <= nowForRange
+  }
+  const cancelledBookingIds = new Set(
+    bookings
+      .filter((booking) => String(booking.status || '').toLowerCase() === 'cancelled')
+      .map((booking) => String(booking.id)),
+  )
+  const excludedPaymentStatuses = new Set(['cancelled', 'failed', 'pending', 'unpaid', 'refunded', 'refund'])
+  const confirmedPayments = payments.filter((payment) => {
+    const status = String(payment.status || 'Paid').toLowerCase()
+    return !excludedPaymentStatuses.has(status)
+      && !cancelledBookingIds.has(String(payment.booking || payment.booking_id || ''))
+      && recordDateInRange(payment)
+  })
   const totalPaidRevenue =
     backendStats?.total_revenue ??
-    (bookings.reduce((sum, b) => sum + (Number(b.paid) || 0), 0) ||
-      payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0))
+    (confirmedPayments.length > 0
+      ? confirmedPayments.reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+      : bookings
+          .filter((booking) => String(booking.status || '').toLowerCase() !== 'cancelled' && recordDateInRange(booking))
+          .reduce((sum, booking) => sum + (Number(booking.paid) || 0), 0))
 
   const pendingPayments =
     backendStats?.pending_payments ??
-    bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+    bookings
+      .filter((booking) => String(booking.status || '').toLowerCase() !== 'cancelled' && recordDateInRange(booking))
+      .reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
 
   const fleetUtilization =
     backendStats?.fleet_utilization ??
     (vehicles.length > 0 ? Math.round((rentedVehicles.length / vehicles.length) * 100) : 0)
 
-  const totalVehiclesCount = backendStats?.total_vehicles ?? vehicles.length
+  const totalVehiclesCount = vehiclesLoading
+    ? <span role="status" aria-label="Loading vehicle count"><Loader2 size={22} className="animate-spin text-slate-400" /></span>
+    : vehiclesError
+      ? '—'
+      : vehiclesTotal ?? vehicles.length
   const availableVehiclesCount = backendStats?.available_vehicles ?? availableVehicles.length
   const activeBookingsCount = backendStats?.active_bookings ?? activeBookings.length
 
@@ -185,7 +226,7 @@ function Dashboard() {
         value: 0,
       })
     }
-    payments.forEach((p) => {
+    confirmedPayments.forEach((p) => {
       const amt = Number(p.amount) || 0
       if (!amt) return
       const pDate = p.date ? new Date(p.date) : null
@@ -246,7 +287,12 @@ function Dashboard() {
         <MetricCard
           label="Total vehicles"
           value={totalVehiclesCount}
-          caption="Total fleet size"
+          caption={vehiclesError
+            ? <span className="inline-flex items-center gap-1 text-rose-600" role="alert">
+              <span>Vehicle count unavailable.</span>
+              <button type="button" onClick={() => syncVehicles?.()} className="font-semibold underline">Retry</button>
+            </span>
+            : vehiclesLoading ? 'Loading vehicle count...' : 'Total fleet size'}
           icon={Bike}
           tone="navy"
         />

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import List, Optional
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from typing import List, Optional, Annotated, Any
+from fastapi import APIRouter, HTTPException, Query, Request, Depends, status
 
-from app.modules.auth.security import get_optional_vendor
+from app.modules.auth.security import get_optional_vendor, get_current_vendor
 from app.modules.bookings.schemas import (
     OfflineBookingCreate,
     OfflineBookingUpdate,
@@ -105,8 +105,12 @@ def update_offline_booking(booking_id: str, payload: OfflineBookingUpdate, reque
     summary="Record payment for an offline booking",
     description="Record a cash/UPI/card payment against a pending booking balance.",
 )
-def record_booking_payment(booking_id: str, payment: PaymentRecordCreate, request: Request) -> OfflineBookingResponse:
-    tenant_id = _get_tenant_id(request)
+def record_booking_payment(
+    booking_id: str,
+    payment: PaymentRecordCreate,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> OfflineBookingResponse:
+    tenant_id = str(vendor["_id"])
     updated = booking_service.record_payment(booking_id, payment, tenant_id=tenant_id)
     if not updated:
         raise HTTPException(

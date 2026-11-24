@@ -1,3 +1,4 @@
+
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
@@ -26,6 +27,7 @@ JWT_ALGORITHM = "HS256"
 JWT_ISSUER = "wavygo-api"
 JWT_AUDIENCE = "wavygo-vendor"
 
+PASSWORD_HASHER = PasswordHash.recommended()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
@@ -190,6 +192,7 @@ def get_vendors_collection(
                 unique=True,
                 name="vendor_email_normalized_unique",
             )
+
         except PyMongoError as exc:
             logger.exception(
                 "Could not initialize vendor indexes."
@@ -239,11 +242,13 @@ def get_current_vendor(
             issuer=JWT_ISSUER,
             audience=JWT_AUDIENCE,
         )
+
     except InvalidTokenError:
         raise unauthorized() from None
 
     # 3. Validate vendor ID
     subject = claims.get("sub")
+
     if (
         claims.get("type") != "access"
         or not isinstance(subject, str)
@@ -269,15 +274,27 @@ def get_current_vendor(
     if vendor is None:
         raise unauthorized()
 
-    # 5. Validate session when MongoDB is configured and token contains jti
+    # 5. Validate session when MongoDB is configured
     session_id = claims.get("jti")
+
+    if (
+        not isinstance(session_id, str)
+        or not ObjectId.is_valid(session_id)
+    ):
+        raise unauthorized()
+
     database = getattr(
         request.app.state,
         "database",
-        None,
+        None
     )
 
-    if database is not None and isinstance(session_id, str) and ObjectId.is_valid(session_id):
+    # Test compatibility:
+    # Tests use fake vendor collections and do not have MongoDB.
+    # In production, the real vendor collection dependency
+    # requires a configured MongoDB database.
+    if database is not None:
+
         try:
             session = database["security_sessions"].find_one({
                 "_id": ObjectId(session_id),

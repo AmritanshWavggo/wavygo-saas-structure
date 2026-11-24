@@ -153,3 +153,63 @@ def ensure_vehicle_indexes() -> None:
         logger.warning("Vehicle index creation warning: %s", exc)
     except PyMongoError as exc:
         logger.error("Failed to ensure vehicle indexes: %s", exc)
+
+
+def ensure_payment_indexes() -> None:
+    """
+    Create required indexes on payments collection.
+    Idempotent and safe for existing data with partialFilterExpression.
+    """
+    db = get_database()
+    if db is None:
+        logger.warning("MongoDB not configured — skipping payment index creation.")
+        return
+
+    payments_col = db["payments"]
+
+    # Check existing data for reference conflicts before creating unique index.
+    try:
+        pipeline = [
+            {"$match": {"transaction_reference": {"$type": "string", "$gt": ""}}},
+            {
+                "$group": {
+                    "_id": {
+                        "tenant_id": "$tenant_id",
+                        "booking": "$booking",
+                        "ref": "$transaction_reference",
+                    },
+                    "count": {"$sum": 1},
+                }
+            },
+            {"$match": {"count": {"$gt": 1}}},
+        ]
+        dups = list(payments_col.aggregate(pipeline))
+        if dups:
+            logger.warning("Existing duplicate transaction references detected: %s", dups)
+    except Exception as check_exc:
+        logger.debug("Payment duplicate check skipped: %s", check_exc)
+
+    indexes = (
+        (
+            "uq_payments_tenant_idempotency",
+            [("tenant_id", ASCENDING), ("idempotency_key", ASCENDING)],
+            {
+                "unique": True,
+                "partialFilterExpression": {"idempotency_key": {"$type": "string", "$gt": ""}},
+            },
+        ),
+        (
+            "uq_payments_tenant_booking_txn_ref",
+            [("tenant_id", ASCENDING), ("booking", ASCENDING), ("transaction_reference", ASCENDING)],
+            {
+                "unique": True,
+                "partialFilterExpression": {"transaction_reference": {"$type": "string", "$gt": ""}},
+            },
+        ),
+        ("ix_payments_tenant_created", [("tenant_id", ASCENDING), ("created_at", ASCENDING)], {}),
+    )
+    for index_name, keys, options in indexes:
+        try:
+            payments_col.create_index(keys, name=index_name, **options)
+        except Exception as exc:
+            logger.error("Failed to create payment index %s: %s", index_name, exc)

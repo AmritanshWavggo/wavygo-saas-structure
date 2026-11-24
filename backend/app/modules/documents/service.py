@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 import time
+from pathlib import PurePosixPath
 from typing import Optional, List, Dict, Any
-from fastapi import UploadFile
+from fastapi import HTTPException, UploadFile, status
 
 import cloudinary
 import cloudinary.uploader
@@ -12,6 +14,16 @@ import cloudinary.api
 from app.core.config import settings
 from app.db.mongodb import get_database
 from app.modules.documents.schemas import DocumentResponse, DocumentUpdate
+
+logger = logging.getLogger(__name__)
+MAX_DOCUMENT_SIZE_BYTES = 10 * 1024 * 1024
+ALLOWED_DOCUMENT_MIME_TYPES = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
 
 
 class DocumentService:
@@ -205,6 +217,146 @@ class DocumentService:
         self._memory_documents[doc_id] = record
 
         return DocumentResponse(**record)
+
+    async def replace_document(
+        self,
+        doc_id: str,
+        file: UploadFile,
+        tenant_id: str,
+    ) -> Optional[DocumentResponse]:
+        filename = PurePosixPath((file.filename or "").replace("\\", "/")).name
+        extension = PurePosixPath(filename).suffix.lower()
+        expected_content_type = ALLOWED_DOCUMENT_MIME_TYPES.get(extension)
+        if not expected_content_type or file.content_type != expected_content_type:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Only PDF, PNG, JPG, JPEG, and WEBP files are supported.",
+            )
+        if file.size is not None and file.size > MAX_DOCUMENT_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Document exceeds the 10 MB limit.",
+            )
+
+        file_bytes = await file.read(MAX_DOCUMENT_SIZE_BYTES + 1)
+        if len(file_bytes) > MAX_DOCUMENT_SIZE_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail="Document exceeds the 10 MB limit.",
+            )
+        if not file_bytes:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="The replacement document cannot be empty.",
+            )
+
+        db = self._get_db()
+        if db is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Document storage is unavailable.",
+            )
+
+        tenant_query = {
+            "$and": [
+                {"$or": [{"id": doc_id}, {"_id": doc_id}]},
+                {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]},
+            ]
+        }
+        try:
+            existing = db["documents"].find_one(tenant_query)
+        except Exception as exc:
+            logger.exception("Unable to load document %s for replacement.", doc_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Document storage is unavailable.",
+            ) from exc
+        if not existing:
+            return None
+
+        try:
+            upload_result = cloudinary.uploader.upload(
+                file_bytes,
+                folder="wavygo_documents",
+                resource_type="auto",
+                use_filename=True,
+                unique_filename=True,
+            )
+            file_url = upload_result.get("secure_url") or upload_result.get("url")
+            public_id = upload_result.get("public_id")
+            if not file_url or not public_id:
+                if public_id:
+                    self._delete_cloudinary_asset({
+                        "public_id": public_id,
+                        "resource_type": upload_result.get("resource_type") or "image",
+                    })
+                raise RuntimeError("Cloudinary did not return a file URL and public ID.")
+        except Exception as exc:
+            logger.exception("Cloudinary replacement upload failed for document %s.", doc_id)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Document upload failed. The existing document was not changed.",
+            ) from exc
+
+        resource_type = upload_result.get("resource_type") or (
+            "raw" if extension == ".pdf" else "image"
+        )
+        now = datetime.now(timezone.utc).isoformat()
+        updated_fields = {
+            "file_url": file_url,
+            "public_id": public_id,
+            "resource_type": resource_type,
+            "file_name": filename,
+            "file_size": upload_result.get("bytes") or len(file_bytes),
+            "format": upload_result.get("format") or extension.lstrip("."),
+            "date": datetime.now(timezone.utc).strftime("%b %d, %Y"),
+            "updated_at": now,
+        }
+        replacement_asset = {"public_id": public_id, "resource_type": resource_type}
+
+        try:
+            result = db["documents"].update_one(
+                tenant_query,
+                {"$set": updated_fields},
+            )
+            if result.matched_count != 1:
+                self._delete_cloudinary_asset(replacement_asset)
+                return None
+        except Exception as exc:
+            self._delete_cloudinary_asset(replacement_asset)
+            logger.exception("Document database update failed for %s.", doc_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Could not save the replacement. The existing document was preserved.",
+            ) from exc
+
+        if doc_id in self._memory_documents:
+            self._memory_documents[doc_id].update(updated_fields)
+
+        old_public_id = existing.get("public_id") or existing.get("publicId")
+        if old_public_id and old_public_id != public_id and not str(old_public_id).startswith("samples/"):
+            old_resource_type = existing.get("resource_type") or (
+                "raw" if str(existing.get("format", "")).lower() == "pdf" else "image"
+            )
+            self._delete_cloudinary_asset({
+                "public_id": old_public_id,
+                "resource_type": old_resource_type,
+            })
+
+        return DocumentResponse(**{**existing, **updated_fields})
+
+    @staticmethod
+    def _delete_cloudinary_asset(asset: Dict[str, Any]) -> None:
+        public_id = asset.get("public_id") or asset.get("publicId")
+        if not public_id:
+            return
+        try:
+            cloudinary.uploader.destroy(
+                public_id,
+                resource_type=asset.get("resource_type") or "image",
+            )
+        except Exception:
+            logger.exception("Failed to remove Cloudinary asset %s.", public_id)
 
     def list_documents(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class VehicleInput(BaseModel):
@@ -18,6 +18,20 @@ class CustomerInput(BaseModel):
     name: str = Field(..., min_length=1, description="Customer full name")
     phone: str = Field(..., min_length=8, description="Contact phone number")
     email: Optional[str] = Field("", description="Customer email address")
+    aadhaar: str = Field(..., description="12-digit Aadhaar number")
+    driving_licence: Optional[str] = Field(None, description="Driving Licence number")
+
+    @field_validator("aadhaar", mode="before")
+    @classmethod
+    def validate_aadhaar(cls, value: object) -> str:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError("Aadhaar Number is required.")
+        if not isinstance(value, str):
+            raise ValueError("Aadhaar Number must contain exactly 12 numeric digits.")
+        value = value.strip()
+        if len(value) != 12 or not value.isascii() or not value.isdigit():
+            raise ValueError("Aadhaar Number must contain exactly 12 numeric digits.")
+        return value
 
 
 class RentalInput(BaseModel):
@@ -55,6 +69,9 @@ class PaymentRecordCreate(BaseModel):
     amount: float = Field(..., gt=0, description="Payment amount collected in INR")
     method: str = Field("Cash", description="Payment method: Cash, UPI, Card")
     notes: Optional[str] = Field(None, description="Payment note or transaction ID")
+    transaction_reference: Optional[str] = Field(None, description="UPI/UTR/Card reference")
+    idempotency_key: Optional[str] = Field(None, description="Unique client UUID for idempotency")
+    payment_date: Optional[str] = Field(None, description="Payment date")
 
 
 class OfflineBookingResponse(BaseModel):
@@ -66,6 +83,8 @@ class OfflineBookingResponse(BaseModel):
     status: str
     paid: float
     pending: float
+    outstanding: float = 0.0
+    payment_status: str = "Unpaid"
     base_amount: float
     add_on_amount: float
     service_fee: float

@@ -35,6 +35,24 @@ function getRentalDays(start, end) {
   return Math.max(1, Math.round((Date.UTC(ey, em - 1, ed) - Date.UTC(sy, sm - 1, sd)) / 86_400_000))
 }
 
+function roundMoney(amount) {
+  return Math.round((Number(amount) + Number.EPSILON) * 100) / 100
+}
+
+function VehicleCardImage({ vehicle, className }) {
+  const [imageError, setImageError] = useState(false)
+  const imageUrl = typeof vehicle.image === 'string' ? vehicle.image.trim() : ''
+  const isImageUrl = /^(https?:|data:image\/|blob:)/i.test(imageUrl)
+
+  return (
+    <span className={`grid shrink-0 place-items-center overflow-hidden ${className}`}>
+      {isImageUrl && !imageError
+        ? <img src={imageUrl} alt={`${vehicle.name || 'Vehicle'} photo`} className="h-full w-full object-cover" onError={() => setImageError(true)} />
+        : isImageUrl ? '🛵' : vehicle.image || '🛵'}
+    </span>
+  )
+}
+
 function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -47,7 +65,7 @@ function AddBooking() {
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
   const [customerMode, setCustomerMode] = useState('existing')
   const [selectedCustomerId, setSelectedCustomerId] = useState('')
-  const [customer, setCustomer] = useState({ name: '', phone: '', email: '' })
+  const [customer, setCustomer] = useState({ name: '', phone: '', email: '', aadhaar: '', drivingLicence: '' })
   const [rental, setRental] = useState({
     startDate: today,
     endDate: tomorrow,
@@ -76,15 +94,15 @@ function AddBooking() {
 
   const rentalDays = getRentalDays(rental.startDate, rental.endDate)
   const dailyPrice = Number(selectedVehicle?.price || 0)
-  const baseAmount = dailyPrice * rentalDays
-  const addOnAmount = rental.addOns ? 500 * rentalDays : 0
-  const serviceFee = Math.round(baseAmount * 0.05)
-  const subtotal = baseAmount + addOnAmount + serviceFee
-  const discountAmount = Math.min(subtotal, Math.max(0, Number(rental.discount) || 0))
+  const baseAmount = roundMoney(dailyPrice * rentalDays)
+  const addOnAmount = rental.addOns ? roundMoney(500 * rentalDays) : 0
+  const serviceFee = roundMoney(baseAmount * 0.05)
+  const subtotal = roundMoney(baseAmount + addOnAmount + serviceFee)
+  const discountAmount = roundMoney(Math.min(subtotal, Math.max(0, Number(rental.discount) || 0)))
   const depositAmount = payment.deposit ? 2000 : 0
-  const totalAmount = subtotal - discountAmount + depositAmount
-  const initialPaid = Math.min(totalAmount, Math.max(0, Number(payment.paidAmount) || 0))
-  const pendingAmount = Math.max(0, totalAmount - initialPaid)
+  const totalAmount = roundMoney(subtotal - discountAmount + depositAmount)
+  const initialPaid = roundMoney(Math.min(totalAmount, Math.max(0, Number(payment.paidAmount) || 0)))
+  const pendingAmount = roundMoney(Math.max(0, totalAmount - initialPaid))
 
   useEffect(() => {
     checkHealth()
@@ -113,6 +131,11 @@ function AddBooking() {
     if (step === 0 && !selectedVehicleId) nextErrors.vehicle = 'Select a vehicle to continue.'
     if (step === 1) {
       if (customerMode === 'existing' && !selectedCustomerId) nextErrors.selectedCustomer = 'Choose a customer or add a new one.'
+      if (!customer.aadhaar.trim()) {
+        nextErrors.aadhaar = 'Aadhaar Number is required.'
+      } else if (!/^\d{12}$/.test(customer.aadhaar.trim())) {
+        nextErrors.aadhaar = 'Aadhaar Number must contain exactly 12 numeric digits.'
+      }
       if (customerMode === 'new') {
         if (!customer.name.trim()) nextErrors.name = 'Enter the customer’s full name.'
         if (!/^[+()\d\s-]{8,}$/.test(customer.phone.trim())) nextErrors.phone = 'Enter a valid phone number.'
@@ -152,6 +175,8 @@ function AddBooking() {
         name: customerName,
         phone: activeCustomer.phone.trim(),
         email: activeCustomer.email ? activeCustomer.email.trim() : '',
+        aadhaar: customer.aadhaar.trim(),
+        driving_licence: customer.drivingLicence.trim(),
       },
       rental: {
         start_date: rental.startDate,
@@ -213,7 +238,7 @@ function AddBooking() {
         }
 
         if (syncOfflineBookings) await syncOfflineBookings()
-        if (syncVehicles) await syncVehicles()
+        if (syncVehicles) await syncVehicles({ force: true })
         if (syncCustomers) await syncCustomers()
 
         setConfirmation({
@@ -308,7 +333,7 @@ function AddBooking() {
 
           <div className="mx-5 mb-5 space-y-4 rounded-2xl border border-slate-100 bg-slate-50/60 p-4 sm:mx-8 sm:p-5">
             <div className="flex items-center gap-3">
-              <span className="grid size-11 place-items-center rounded-xl bg-emerald-100 text-2xl">{selectedVehicle?.image || '🛵'}</span>
+              <VehicleCardImage vehicle={selectedVehicle} className="size-11 rounded-xl bg-emerald-100 text-2xl" />
               <div>
                 <p className="text-sm font-semibold text-slate-900">{confirmation.vehicleName}</p>
                 <p className="mt-1 text-xs text-slate-500">{selectedVehicle?.registration || selectedVehicle?.id}</p>
@@ -433,7 +458,7 @@ function AddBooking() {
                       {selectedVehicleId === vehicle.id && <span className="size-2.5 rounded-full bg-emerald-700" />}
                     </span>
                     <div className="flex items-center gap-3">
-                      <span className="grid size-12 place-items-center rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl">{vehicle.image || '🛵'}</span>
+                      <VehicleCardImage vehicle={vehicle} className="size-12 rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl" />
                       <div className="min-w-0">
                         <p className="truncate pr-5 text-sm font-semibold text-slate-900">{vehicle.name}</p>
                         <p className="mt-1 truncate text-xs text-slate-500">{vehicle.registration || vehicle.id}</p>
@@ -466,7 +491,7 @@ function AddBooking() {
               </div>
 
               {customerMode === 'existing' ? (
-                <div>
+                <div className="space-y-4">
                   <label className="mb-1.5 block text-sm font-semibold text-slate-700">Choose customer<span className="ml-1 text-rose-500">*</span></label>
                   <div className="space-y-2">
                     {customers.map((item) => (
@@ -490,13 +515,19 @@ function AddBooking() {
                     ))}
                   </div>
                   {errors.selectedCustomer && <p className="mt-1.5 text-xs text-rose-600">{errors.selectedCustomer}</p>}
+                  {selectedCustomerId && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
+                      <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Full name" name="name" value={customer.name} onChange={(value) => updateCustomer('name', value)} error={errors.name} placeholder="e.g. Ramesh Kumar" required />
                   <Field label="Phone number" name="phone" value={customer.phone} onChange={(value) => updateCustomer('phone', value)} error={errors.phone} placeholder="+91 98765 43210" required />
-                  <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} error={errors.drivingLicence} placeholder="Enter licence number" required />
-                  <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" maxLength={12} required />
+                  <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                  <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
                   <div className="sm:col-span-2">
                     <Field label="Email address (optional)" name="email" value={customer.email} onChange={(value) => updateCustomer('email', value)} error={errors.email} placeholder="ramesh@example.com" type="email" />
                   </div>
@@ -666,7 +697,7 @@ function AddBooking() {
 
               <div className="rounded-2xl border border-slate-200 p-4">
                 <div className="flex items-center gap-3">
-                  <span className="grid size-12 place-items-center rounded-xl bg-emerald-50 text-2xl">{selectedVehicle?.image || '🛵'}</span>
+                  <VehicleCardImage vehicle={selectedVehicle} className="size-12 rounded-xl bg-emerald-50 text-2xl" />
                   <div>
                     <p className="text-sm font-semibold text-slate-900">{selectedVehicle?.name}</p>
                     <p className="mt-1 text-xs text-slate-500">{selectedVehicle?.registration || selectedVehicle?.id} · {selectedVehicle?.type}</p>
@@ -811,7 +842,7 @@ function AddBooking() {
           <div className="mt-4 rounded-xl bg-slate-50 p-3.5">
             {selectedVehicle ? (
               <div className="flex items-center gap-3">
-                <span className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-xl">{selectedVehicle.image || '🛵'}</span>
+                <VehicleCardImage vehicle={selectedVehicle} className="size-10 rounded-xl bg-emerald-50 text-xl" />
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-800">{selectedVehicle.name}</p>
                   <p className="mt-0.5 text-xs text-slate-500">₹{Number(selectedVehicle.price).toLocaleString('en-IN')} / day</p>
