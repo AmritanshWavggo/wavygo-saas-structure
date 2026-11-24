@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ArrowDownToLine,
   ArrowUpRight,
@@ -69,6 +69,8 @@ function PaymentStatusBadge({ status }) {
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
 
+const isAdminRole = (role) => String(role || '').trim().toLowerCase() === 'admin'
+
 function nextId(prefix, records) {
   // Continue the largest existing numeric suffix so inserted demo rows receive unique IDs.
   const max = records.reduce((largest, record) => {
@@ -78,9 +80,10 @@ function nextId(prefix, records) {
   return `${prefix}-${max + 1}`
 }
 
-function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save record', showDemoNote = false }) {
-  const initialValues = Object.fromEntries(fields.map((field) => [field.name, field.initial || '']))
-  const [values, setValues] = useState(initialValues)
+function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo', showDemoNote = true, initialValues = {}, externalError = '' }) {
+  const [values, setValues] = useState(() => Object.fromEntries(
+    fields.map((field) => [field.name, initialValues[field.name] ?? field.initial ?? '']),
+  ))
   const [error, setError] = useState('')
 
   function submit(event) {
@@ -151,7 +154,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save record',
             </label>
           ))}
         </div>
-        {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
+        {(error || externalError) && <p role="alert" className="text-xs text-rose-600">{error || externalError}</p>}
         {showDemoNote && (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
             Demo only. This record is held in page state and is not sent to a server.
@@ -162,7 +165,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save record',
   )
 }
 
-function DetailDialog({ title, rows, onClose, showDemoNote = false }) {
+function DetailDialog({ title, rows, onClose, showDemoNote = true }) {
   return (
     <Modal title={title} onClose={onClose}>
       <div className="space-y-3">
@@ -179,27 +182,39 @@ function DetailDialog({ title, rows, onClose, showDemoNote = false }) {
 }
 
 function Customers() {
-  const { customers, addRecord, syncCustomers } = useDemoData()
+  const { customers, addRecord, updateCustomerDetails, customerEditHistory = [], currentDemoUser, payments = [], bookings = [], paymentAdjustments = [], addPaymentAdjustment } = useDemoData()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All')
   const [searchParams] = useSearchParams()
   const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
   const [selected, setSelected] = useState(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [notice, setNotice] = useState('')
+  const [editingCustomer, setEditingCustomer] = useState(null)
+  const [editError, setEditError] = useState('')
+  const [customerPaymentForm, setCustomerPaymentForm] = useState(null)
+  const [paymentError, setPaymentError] = useState('')
+  const isAdmin = isAdminRole(currentDemoUser?.role)
 
-  useEffect(() => {
-    syncCustomers?.()
-  }, [])
+  const previousCustomerNames = selected ? customerEditHistory.filter((entry) => entry.customerId === selected.id).flatMap((entry) => entry.changes?.name ? [entry.changes.name.before] : []) : []
+  const customerNames = selected ? new Set([selected.name, ...previousCustomerNames].filter(Boolean)) : new Set()
+  const customerPayments = selected ? payments.filter((payment) => customerNames.has(payment.customer)) : []
+  const effectivePaymentAmount = (payment) => Number(payment.amount || 0) + paymentAdjustments.filter((item) => item.paymentId === payment.id).reduce((sum, item) => sum + Number(item.difference || 0), 0)
 
-  async function handleRefresh() {
-    setIsSyncing(true)
-    try {
-      if (syncCustomers) await syncCustomers()
-    } finally {
-      setIsSyncing(false)
-    }
+  function saveCustomerPaymentCorrection(values) {
+    if (!isAdmin) { setPaymentError('Only the Admin demo role can correct payment records.'); return }
+    const payment = customerPaymentForm
+    const booking = bookings.find((item) => item.id === payment?.booking)
+    if (!payment || !booking) { setPaymentError('The linked booking could not be found.'); return }
+    const amount = Number(values.correctedAmount)
+    if (!Number.isFinite(amount) || amount < 0) { setPaymentError('Enter a valid amount of zero or more.'); return }
+    if (!String(values.reason || '').trim()) { setPaymentError('A correction reason is required.'); return }
+    const difference = amount - effectivePaymentAmount(payment)
+    if (difference > Number(booking.pending || 0)) { setPaymentError(`The increase cannot exceed the booking pending balance (${currency(booking.pending)}).`); return }
+    if (Number(booking.paid || 0) + difference < 0) { setPaymentError('The correction cannot make the booking paid amount negative.'); return }
+    const result = addPaymentAdjustment({ paymentId: payment.id, bookingId: payment.booking, correctedAmount: amount, reason: values.reason.trim(), actor: currentDemoUser })
+    if (!result?.success) { setPaymentError(result?.error || 'Unable to save correction.'); return }
+    setSelected((current) => current ? { ...current, paid: Number(current.paid || 0) + difference, pending: Number(current.pending || 0) - difference } : current)
+    setCustomerPaymentForm(null)
+    setPaymentError('')
   }
 
   const filtered = customers.filter((customer) =>
@@ -246,7 +261,7 @@ function Customers() {
             { key: 'paid', label: 'Total paid', render: (row) => currency(row.paid || 0) },
             { key: 'pending', label: 'Pending', render: (row) => currency(row.pending || 0) },
             { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            { key: 'view', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}><Eye size={15} />View</Button> },
+            { key: 'actions', label: 'Actions', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button><Button variant="secondary" className="min-h-8 px-2" onClick={() => { setEditError(''); setEditingCustomer(row) }}>Edit</Button></div> },
           ]}
         />
         <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} customers listed</p>
@@ -291,17 +306,110 @@ function Customers() {
           }}
         />
       )}
-      {selected && (
-        <DetailDialog
-          title={selected.name}
-          record={selected}
-          onClose={() => setSelected(null)}
-          rows={[
-            ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
-            ['Profile status', selected.status], ['Total bookings', selected.bookings],
-            ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
-            ['Pending amount', currency(selected.pending)],
+      {editingCustomer && (
+        <RecordForm
+          key={editingCustomer.id}
+          title={`Edit customer · ${editingCustomer.id}`}
+          onClose={() => { setEditingCustomer(null); setEditError('') }}
+          initialValues={{
+            name: editingCustomer.name,
+            phone: editingCustomer.phone,
+            email: editingCustomer.email,
+            status: editingCustomer.status,
+          }}
+          fields={[
+            { name: 'name', label: 'Full name', required: true },
+            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
+            { name: 'email', label: 'Email address', type: 'email' },
+            { name: 'status', label: 'Profile status', type: 'select', options: ['Review', 'Verified'], required: true },
+            { name: 'reason', label: 'Reason for editing', required: true, wide: true, placeholder: 'Explain why these customer details are being changed' },
           ]}
+          onSave={(values) => {
+            const { reason, ...changes } = values
+            const result = updateCustomerDetails({
+              customerId: editingCustomer.id,
+              changes,
+              reason,
+              actor: currentDemoUser,
+            })
+            if (!result?.success) {
+              setEditError(result?.error || 'Unable to update this customer.')
+              return
+            }
+            setSelected((current) => current?.id === editingCustomer.id ? result.customer : current)
+            setEditingCustomer(null)
+            setEditError('')
+          }}
+          externalError={editError}
+          saveLabel="Save changes"
+        />
+      )}
+      {selected && (
+        <Modal title={selected.name} onClose={() => setSelected(null)}>
+          <div className="space-y-3">
+            {[
+              ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
+              ['Profile status', selected.status], ['Total bookings', selected.bookings],
+              ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
+              ['Pending amount', currency(selected.pending)],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
+                <span className="text-xs text-slate-500">{label}</span>
+                <span className="text-right text-xs font-medium text-slate-800">{value || '—'}</span>
+              </div>
+            ))}
+            <div className="border-t border-slate-200 pt-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-900">Payment history</h3>
+                <span className="text-[10px] text-slate-400">{customerPayments.length} transaction(s)</span>
+              </div>
+              {customerPayments.length ? customerPayments.map((payment) => {
+                const corrections = paymentAdjustments.filter((item) => item.paymentId === payment.id)
+                return (
+                  <div key={payment.id} className="mb-2 rounded-xl border border-slate-200 p-3 last:mb-0">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-800">{payment.id} · {payment.booking}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{payment.date} · {payment.method} · {payment.status}</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-xs font-semibold text-slate-900">{currency(effectivePaymentAmount(payment))}</p>
+                        <p className="text-[10px] text-slate-400">Original: {currency(payment.amount)}</p>
+                      </div>
+                    </div>
+                    {corrections.map((entry, index) => (
+                      <div key={entry.id} className="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-600">
+                        Correction {index + 1}: {currency(entry.previousAmount)} → {currency(entry.correctedAmount)} · {entry.reason}<br />
+                        By {entry.correctedBy} ({entry.correctedByRole}) · {new Date(entry.correctedAt).toLocaleString()}
+                      </div>
+                    ))}
+                    {isAdmin && <div className="mt-2 flex justify-end"><Button variant="secondary" className="min-h-8 px-2.5" onClick={() => { setPaymentError(''); setCustomerPaymentForm(payment) }}>Edit payment</Button></div>}
+                  </div>
+                )
+              }) : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No payment transactions are linked to this customer in the current demo data.</p>}
+              {!isAdmin && <p className="mt-2 text-[10px] text-slate-400">Payment corrections are available to the Admin demo role only.</p>}
+            </div>
+            {customerEditHistory.filter((entry) => entry.customerId === selected.id).map((entry, index) => (
+              <div key={entry.id} className="rounded-lg bg-slate-50 p-2.5 text-[10px] leading-4 text-slate-600">
+                Customer edit {index + 1}: {entry.reason} · {entry.actorName} ({entry.actorRole}) · {new Date(entry.createdAt).toLocaleString()}
+              </div>
+            ))}
+            <p className="pt-1 text-[10px] text-slate-400">Sample workspace details · Demo data only</p>
+          </div>
+        </Modal>
+      )}
+      {customerPaymentForm && isAdmin && (
+        <RecordForm
+          title={`Correct payment · ${customerPaymentForm.id}`}
+          onClose={() => { setCustomerPaymentForm(null); setPaymentError('') }}
+          initialValues={{ correctedAmount: String(effectivePaymentAmount(customerPaymentForm)) }}
+          fields={[
+            { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
+            { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this payment is being corrected' },
+          ]}
+          onSave={saveCustomerPaymentCorrection}
+          externalError={paymentError}
+          saveLabel="Save correction"
         />
       )}
     </div>
@@ -309,28 +417,41 @@ function Customers() {
 }
 
 function Bookings() {
-  const { bookings, updateRecord, syncOfflineBookings, syncPayments } = useDemoData()
+  const { bookings, vehicles, customers, currentDemoUser, updateRecord, createDemoBooking, cancelDemoBooking, cancellationHistory = [], refundAdjustments = [] } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
-  const [paymentModalBooking, setPaymentModalBooking] = useState(null)
-  const [isSyncing, setIsSyncing] = useState(false)
-
-  useEffect(() => {
-    syncOfflineBookings?.()
-  }, [])
-
+  const [paymentForm, setPaymentForm] = useState(null)
+  const [showBookingForm, setShowBookingForm] = useState(false)
+  const [cancelForm, setCancelForm] = useState(null)
+  const [formError, setFormError] = useState('')
   const online = bookings.filter((item) => item.type === 'Online').length
   const offline = bookings.filter((item) => item.type === 'Offline').length
-  const revenue = bookings.reduce((sum, item) => sum + item.paid, 0)
-  const pending = bookings.reduce((sum, item) => sum + item.pending, 0)
-  const tabs = ['All', 'Online', 'Offline', 'Active', 'Completed', 'Cancelled']
+  const revenue = bookings.reduce((sum, item) => sum + Number(item.paid || 0), 0)
+  const pending = bookings.reduce((sum, item) => sum + Number(item.pending || 0), 0)
+  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
-    // The shared tab control intentionally matches either booking channel or booking status.
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
-    const tabMatch = tab === 'All' || booking.type === tab || booking.status === tab
-    return termMatch && tabMatch
+    return termMatch && (tab === 'All' || booking.type === tab || booking.status === tab)
   })
+  const vehicleOptions = vehicles.filter((item) => item.status === 'Online' && item.availability !== 'Maintenance').map((item) => ({ value: item.id, label: `${item.name} · ${currency(item.price)}/day` }))
+  const customerOptions = customers.map((item) => ({ value: item.id, label: item.name }))
+
+  function saveBooking(values) {
+    const result = createDemoBooking({ ...values, type: 'Offline', actor: currentDemoUser })
+    if (!result?.success) { setFormError(result?.error || 'Booking could not be created.'); return }
+    setShowBookingForm(false)
+    setFormError('')
+    setSelected(result.booking)
+  }
+
+  function saveCancellation(values) {
+    const result = cancelDemoBooking({ bookingId: cancelForm.id, reason: values.reason, refundAmount: values.refundAmount, actor: currentDemoUser })
+    if (!result?.success) { setFormError(result?.error || 'Cancellation could not be completed.'); return }
+    setCancelForm(null)
+    setFormError('')
+    setSelected(null)
+  }
 
   async function handleRefresh() {
     setIsSyncing(true)
@@ -345,992 +466,162 @@ function Bookings() {
 
   return (
     <div>
-      <PageHeader
-        title="Bookings"
-        description="Track online and in-store rentals, upcoming handovers and payments."
-        action={
-          <div className="flex items-center gap-2">
-            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
-              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
-              {isSyncing ? 'Syncing...' : 'Sync backend'}
-            </Button>
-            <Link to="/app/bookings/new">
-              <Button><Plus size={16} />Offline booking</Button>
-            </Link>
-          </div>
-        }
-      />
+      <PageHeader title="Bookings" description="Check vehicle availability, prevent overlapping rentals and manage cancellations." action={<Button onClick={() => { setFormError(''); setShowBookingForm(true) }}><Plus size={16} />Offline booking</Button>} />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard label="Total bookings" value={bookings.length} caption="All bookings" icon={ClipboardList} />
         <MetricCard label="Online bookings" value={online} icon={ArrowUpRight} tone="blue" />
         <MetricCard label="Offline bookings" value={offline} icon={CalendarDays} tone="violet" />
-        <MetricCard label="Revenue · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Paid · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
       </div>
       <Card className="overflow-hidden">
         <Tabs items={tabs.map((label) => ({ label, value: label, count: label === 'All' ? bookings.length : undefined }))} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search ID, customer or vehicle…" /></div>
-        <DataTable
-          rows={filtered}
-          emptyTitle="No customers registered yet"
-          emptyText="Customers added through bookings or manually will appear here."
-          columns={[
-            {
-              key: 'id',
-              label: 'Booking ID',
-              render: (row) => (
-                <div className="flex items-center gap-1.5">
-                  <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
-                    {row.id}
-                  </button>
-                  {row.backendSynced && (
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                      API
-                    </span>
-                  )}
-                </div>
-              ),
-            },
-            { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
-            { key: 'dates', label: 'Rental dates' },
-            { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            {
-              key: 'payment_status',
-              label: 'Payment',
-              render: (row) => {
-                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
-                return <PaymentStatusBadge status={pStatus} />
-              },
-            },
-            { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) },
-            {
-              key: 'outstanding',
-              label: 'Outstanding',
-              render: (row) => {
-                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
-                return currency(out)
-              },
-            },
-            {
-              key: 'actions',
-              label: '',
-              render: (row) => {
-                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
-                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
-                const canPay = pStatus !== 'Paid' && out > 0 && row.status !== 'Cancelled'
-                return (
-                  <div className="flex gap-1">
-                    <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
-                      <Eye size={15} />
-                    </Button>
-                    {canPay && (
-                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => setPaymentModalBooking(row)}>
-                        Record payment
-                      </Button>
-                    )}
-                  </div>
-                )
-              },
-            },
-          ]}
-        />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
-          Showing {filtered.length} bookings · Offline desk & online reservations
-        </p>
+        <DataTable rows={filtered} columns={[
+          { key: 'id', label: 'Booking ID', render: (row) => <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">{row.id}</button> },
+          { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
+          { key: 'dates', label: 'Rental dates', render: (row) => <span className="text-xs">{row.dates}{row.startAt && <span className="mt-1 block text-[10px] text-slate-400">{new Date(row.startAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – {new Date(row.endAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</span> },
+          { key: 'type', label: 'Type' }, { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+          { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) }, { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
+          { key: 'actions', label: 'Actions', render: (row) => <div className="flex flex-wrap gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button>{row.pending > 0 && ['Confirmed','Active'].includes(row.status) && <Button variant="quiet" className="min-h-8 px-2" onClick={() => setPaymentForm(row)}>Update payment</Button>}{['Confirmed','Active'].includes(row.status) && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCancelForm(row) }}>Cancel</Button>}</div> },
+        ]} />
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">Demo booking records · {filtered.length} shown · Overlap checks run against demo booking dates and times</p>
       </Card>
-      {selected && (
-        <DetailDialog
-          title={`Booking ${selected.id}`}
-          onClose={() => setSelected(null)}
-          record={selected}
-          rows={[
-            ...Object.entries(selected).map(([key, value]) => [
-              key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
-              ['paid', 'pending', 'outstanding', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
-            ]),
-            ['Payment Status', selected.payment_status || (Number(selected.paid) >= Number(selected.total_amount) && Number(selected.total_amount) > 0 ? 'Paid' : Number(selected.paid) > 0 ? 'Partially Paid' : 'Unpaid')],
-            ['Payment Transactions', (selected.payment_details?.transactions || []).length > 0 ? (
-              <div className="mt-1 space-y-1.5">
-                {selected.payment_details.transactions.map((tx, idx) => (
-                  <div key={idx} className="rounded-md bg-slate-50 p-2 text-xs text-slate-700">
-                    <span className="font-semibold text-emerald-800">{tx.id || `TX-${idx+1}`}</span> · {currency(tx.amount)} via {tx.method} ({tx.date?.substring(0, 10) || 'Date N/A'})
-                    {tx.transaction_reference && <span className="block text-slate-400">Ref: {tx.transaction_reference}</span>}
-                    {tx.notes && <span className="block italic text-slate-500">Note: {tx.notes}</span>}
-                  </div>
-                ))}
-              </div>
-            ) : 'No transactions recorded yet'],
-          ]}
-        />
-      )}
-      {paymentModalBooking && (
-        <RecordPaymentModal
-          isOpen={!!paymentModalBooking}
-          booking={paymentModalBooking}
-          onClose={() => setPaymentModalBooking(null)}
-          onSuccess={async () => {
-            if (syncOfflineBookings) await syncOfflineBookings()
-            if (syncPayments) await syncPayments()
-          }}
-        />
-      )}
+      {showBookingForm && <RecordForm title="Create offline booking" onClose={() => { setShowBookingForm(false); setFormError('') }} fields={[
+        { name: 'customerId', label: 'Customer', type: 'select', options: customerOptions, required: true },
+        { name: 'vehicleId', label: 'Vehicle', type: 'select', options: vehicleOptions, required: true },
+        { name: 'startAt', label: 'Start date & time', type: 'datetime-local', required: true },
+        { name: 'endAt', label: 'End date & time', type: 'datetime-local', required: true },
+        { name: 'paid', label: 'Amount paid (₹)', type: 'number', min: 0, initial: '0' },
+      ]} onSave={saveBooking} externalError={formError} saveLabel="Check availability & create" />}
+      {cancelForm && <RecordForm title={`Cancel booking · ${cancelForm.id}`} onClose={() => { setCancelForm(null); setFormError('') }} initialValues={{ refundAmount: String(cancelForm.paid || 0) }} fields={[
+        { name: 'reason', label: 'Cancellation reason', required: true, wide: true, placeholder: 'Enter why this booking is being cancelled' },
+        { name: 'refundAmount', label: `Refund amount (₹) · max ${currency(cancelForm.paid)}`, type: 'number', min: 0, step: '0.01', required: true },
+      ]} onSave={saveCancellation} externalError={formError} saveLabel="Confirm cancellation" />}
+      {selected && <Modal title={`Booking ${selected.id}`} onClose={() => setSelected(null)}>
+        <div className="space-y-3">
+          {Object.entries(selected).filter(([key]) => !['customerId','vehicleId'].includes(key)).map(([key,value]) => <div key={key} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5"><span className="text-xs text-slate-500">{key.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase())}</span><span className="max-w-[65%] text-right text-xs font-medium text-slate-800">{['paid','pending','totalAmount','refundedAmount'].includes(key) ? currency(value) : String(value ?? '—')}</span></div>)}
+          {cancellationHistory.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-xl bg-rose-50 p-3 text-xs leading-5 text-rose-900"><strong>Cancellation history</strong><p>Reason: {entry.reason}</p><p>By: {entry.cancelledBy} ({entry.cancelledByRole})</p><p>At: {new Date(entry.cancelledAt).toLocaleString()}</p><p>Refund: {currency(entry.refundAmount)} · {entry.refundStatus}</p></div>)}
+          {refundAdjustments.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Refund {currency(entry.amount)} · {entry.status}</div>)}
+          <p className="pt-1 text-[10px] text-slate-400">Demo only. No actual payment or refund is processed.</p>
+        </div>
+      </Modal>}
+      {paymentForm && <RecordForm title={`Record payment · ${paymentForm.id}`} onClose={() => setPaymentForm(null)} fields={[{ name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true }]} onSave={(values) => { const amount = Math.min(Number(values.amount), paymentForm.pending); updateRecord('bookings', paymentForm.id, { paid: paymentForm.paid + amount, pending: paymentForm.pending - amount }); setPaymentForm(null) }} saveLabel="Record in demo" />}
     </div>
   )
 }
 
 function Payments() {
-  const {
-    payments = [],
-    bookings = [],
-    expenses = [],
-    financeOverview,
-    syncPayments,
-    syncFinance,
-    syncOfflineBookings,
-    addRecord,
-    updateRecord,
-    deleteRecord,
-  } = useDemoData()
+  const { payments, paymentAdjustments = [], refundAdjustments = [], bookings, addPaymentAdjustment, currentDemoUser } = useDemoData()
+  const isAdmin = isAdminRole(currentDemoUser?.role)
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [dateRange, setDateRange] = useState('This month')
   const [selected, setSelected] = useState(null)
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [showRecordModal, setShowRecordModal] = useState(false)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [correctionForm, setCorrectionForm] = useState(null)
   const [formError, setFormError] = useState('')
-  const [refundLoading, setRefundLoading] = useState(false)
 
-  // Section switcher: 'payments' | 'expenses'
-  const [section, setSection] = useState('payments')
-
-  // Expense form state
-  const [showExpenseModal, setShowExpenseModal] = useState(false)
-  const [expCategory, setExpCategory] = useState('Rent & Operations')
-  const [expTitle, setExpTitle] = useState('')
-  const [expAmount, setExpAmount] = useState('')
-  const [expPayee, setExpPayee] = useState('')
-  const [expMethod, setExpMethod] = useState('Bank Transfer')
-  const [expStatus, setExpStatus] = useState('Paid')
-  const [expNotes, setExpNotes] = useState('')
-  const [isExpSubmitting, setIsExpSubmitting] = useState(false)
-  const [expFormError, setExpFormError] = useState('')
-  const [expFilterCategory, setExpFilterCategory] = useState('All')
-
-  // Payment Form State
-  const [formBooking, setFormBooking] = useState('')
-  const [formCustomer, setFormCustomer] = useState('')
-  const [formAmount, setFormAmount] = useState('')
-  const [formMethod, setFormMethod] = useState('UPI')
-  const [formStatus, setFormStatus] = useState('Paid')
-  const [formNotes, setFormNotes] = useState('')
-
-  const revenue = payments
-    .filter((p) => p.status !== 'Refunded')
-    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
-
-  const offlineRevenue = payments
-    .filter((p) => p.status !== 'Refunded' && (p.method === 'Cash' || p.method === 'UPI'))
-    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
-
-  const pendingTotal = bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
-
+  const adjustmentTotal = (paymentId) => paymentAdjustments
+    .filter((item) => item.paymentId === paymentId)
+    .reduce((sum, item) => sum + Number(item.difference || 0), 0)
+  const effectiveAmount = (payment) => Number(payment.amount || 0) + adjustmentTotal(payment.id)
+  const revenue = payments.reduce((sum, payment) => sum + effectiveAmount(payment), 0) - refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const pendingRefundTotal = refundAdjustments.filter((item) => item.status === 'Refund pending (demo)').reduce((sum, item) => sum + Number(item.amount || 0), 0)
   const filtered = payments.filter((payment) =>
     `${payment.id} ${payment.booking} ${payment.customer} ${payment.method}`.toLowerCase().includes(query.toLowerCase())
-    && (tab === 'All' || payment.status === tab),
-  ).filter((payment) => dateRange === 'All time' || (payment.date && (payment.date.includes('2026') || payment.date.includes('Oct'))))
+    && (tab === 'All' || (tab === 'Adjusted' ? paymentAdjustments.some((item) => item.paymentId === payment.id) : payment.status === tab)),
+  ).filter((payment) => dateRange === 'All time' || payment.date.includes('Oct 2026'))
 
-  const filteredExpenses = expenses.filter((e) =>
-    `${e.id} ${e.category} ${e.title} ${e.payee || ''} ${e.reference || ''}`.toLowerCase().includes(query.toLowerCase())
-    && (expFilterCategory === 'All' || e.category === expFilterCategory),
-  )
-
-  function handleBookingSelect(e) {
-    const bId = e.target.value
-    setFormBooking(bId)
-    if (bId) {
-      const b = bookings.find((item) => item.id === bId)
-      if (b) {
-        setFormCustomer(b.customer || '')
-        if (b.pending && Number(b.pending) > 0) {
-          setFormAmount(String(b.pending))
-        } else if (b.paid && Number(b.paid) > 0) {
-          setFormAmount(String(b.paid))
-        } else if (b.total_amount) {
-          setFormAmount(String(b.total_amount))
-        }
-      }
-    }
-  }
-
-  useEffect(() => {
-    syncPayments?.()
-    syncFinance?.()
-    syncOfflineBookings?.()
-  }, [])
-
-  async function handleRefresh() {
-    setIsSyncing(true)
-    try {
-      await Promise.allSettled([
-        syncPayments ? syncPayments() : Promise.resolve(),
-        syncFinance ? syncFinance() : Promise.resolve(),
-        syncOfflineBookings ? syncOfflineBookings() : Promise.resolve(),
-      ])
-    } finally {
-      setIsSyncing(false)
-    }
-  }
-
-  async function handleRecordExpense(e) {
-    e.preventDefault()
-    if (!expTitle.trim()) {
-      setExpFormError('Expense title/description is required.')
+  function saveCorrection(values) {
+    const correctedAmount = Number(values.correctedAmount)
+    const currentAmount = effectiveAmount(correctionForm)
+    const difference = correctedAmount - currentAmount
+    const booking = bookings.find((item) => item.id === correctionForm.booking)
+    if (!Number.isFinite(correctedAmount) || correctedAmount < 0) {
+      setFormError('Enter a valid corrected amount of zero or more.')
       return
     }
-    const amt = parseFloat(expAmount)
-    if (isNaN(amt) || amt <= 0) {
-      setExpFormError('Please enter a valid expense amount.')
+    if (!String(values.reason || '').trim()) {
+      setFormError('A correction reason is required.')
       return
     }
-
-    setExpFormError('')
-    setIsExpSubmitting(true)
-
-    try {
-      const payload = {
-        category: expCategory,
-        title: expTitle.trim(),
-        amount: amt,
-        payment_method: expMethod,
-        payee: expPayee.trim() || undefined,
-        status: expStatus,
-        notes: expNotes.trim() || undefined,
-      }
-
-      const created = await financeService.createExpense(payload)
-
-      if (addRecord) {
-        addRecord('expenses', {
-          ...created,
-          backendSynced: true,
-        })
-      }
-
-      if (syncFinance) {
-        await syncFinance()
-      }
-
-      setShowExpenseModal(false)
-      setExpTitle('')
-      setExpAmount('')
-      setExpPayee('')
-      setExpNotes('')
-    } catch (err) {
-      setExpFormError(err.message || 'Failed to record expense in backend.')
-    } finally {
-      setIsExpSubmitting(false)
-    }
-  }
-
-  async function handleDeleteExpense(expenseId) {
-    if (!window.confirm(`Are you sure you want to delete expense ${expenseId}?`)) return
-    try {
-      await financeService.deleteExpense(expenseId)
-      if (deleteRecord) {
-        deleteRecord('expenses', expenseId)
-      }
-      if (syncFinance) {
-        await syncFinance()
-      }
-    } catch (err) {
-      alert(`Delete failed: ${err.message || 'Error occurred'}`)
-    }
-  }
-
-  async function handleRecordPayment(e) {
-    e.preventDefault()
-    if (!formCustomer.trim()) {
-      setFormError('Customer name is required.')
+    if (!booking) {
+      setFormError('The linked booking could not be found. No correction was saved.')
       return
     }
-    const amt = parseFloat(formAmount)
-    if (isNaN(amt) || amt <= 0) {
-      setFormError('Please enter a valid positive amount.')
+    if (difference > Number(booking.pending || 0)) {
+      setFormError(`The increase cannot exceed the booking's pending balance (${currency(booking.pending)}).`)
       return
     }
-
+    if (Number(booking.paid || 0) + difference < 0) {
+      setFormError('The correction cannot make the booking paid amount negative.')
+      return
+    }
+    const result = addPaymentAdjustment({
+      paymentId: correctionForm.id,
+      bookingId: correctionForm.booking,
+      correctedAmount,
+      reason: values.reason.trim(),
+      actor: currentDemoUser,
+    })
+    if (!result?.success) {
+      setFormError(result?.error || 'The payment correction could not be saved.')
+      return
+    }
+    setCorrectionForm(null)
     setFormError('')
-    setIsSubmitting(true)
-
-    try {
-      const payload = {
-        booking: formBooking.trim() || 'COUNTER-WALKIN',
-        customer: formCustomer.trim(),
-        method: formMethod,
-        amount: amt,
-        status: formStatus,
-        notes: formNotes.trim() || undefined,
-      }
-
-      const created = await paymentService.recordPayment(payload)
-
-      if (addRecord) {
-        addRecord('payments', {
-          ...created,
-          backendSynced: true,
-        })
-      }
-
-      if (syncPayments) {
-        await syncPayments()
-      }
-
-      if (formBooking && syncOfflineBookings) {
-        await syncOfflineBookings()
-      }
-
-      // If linked to a booking, also adjust booking's paid/pending in state
-      if (formBooking && updateRecord) {
-        const linkedBooking = bookings.find((b) => b.id === formBooking)
-        if (linkedBooking) {
-          const newPaid = (Number(linkedBooking.paid) || 0) + amt
-          const currentPending = Number(linkedBooking.pending) || 0
-          const newPending = Math.max(0, currentPending - amt)
-          updateRecord('bookings', formBooking, {
-            paid: newPaid,
-            pending: newPending,
-          })
-        }
-      }
-
-      setShowRecordModal(false)
-      setFormBooking('')
-      setFormCustomer('')
-      setFormAmount('')
-      setFormMethod('UPI')
-      setFormStatus('Paid')
-      setFormNotes('')
-    } catch (err) {
-      setFormError(err.message || 'Failed to record payment in backend.')
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  async function handleRefund(paymentId) {
-    if (!window.confirm(`Are you sure you want to process a refund for ${paymentId}?`)) return
-    setRefundLoading(true)
-    try {
-      await paymentService.refundPayment(paymentId, 'Requested by customer at counter')
-      if (updateRecord) {
-        updateRecord('payments', paymentId, { status: 'Refunded' })
-      }
-      if (syncPayments) {
-        await syncPayments()
-      }
-      setSelected((prev) => (prev && prev.id === paymentId ? { ...prev, status: 'Refunded' } : prev))
-    } catch (err) {
-      alert(`Refund failed: ${err.message || 'Error occurred'}`)
-    } finally {
-      setRefundLoading(false)
-    }
   }
 
   return (
     <div>
-      <PageHeader
-        title="Payments & finance"
-        description="A clear picture of collections and transactions stored in MongoDB, with UPI, Cash, and Card records."
-        action={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              className="min-h-9"
-              onClick={handleRefresh}
-              disabled={isSyncing}
-            >
-              <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
-              {isSyncing ? 'Syncing...' : 'Sync backend'}
-            </Button>
-            <Button
-              variant="secondary"
-              className="min-h-9"
-              onClick={() => {
-                setExpFormError('')
-                setShowExpenseModal(true)
-              }}
-            >
-              <Plus size={15} />
-              Record expense
-            </Button>
-            <Button
-              className="min-h-9"
-              onClick={() => {
-                setFormError('')
-                setShowRecordModal(true)
-              }}
-            >
-              <Plus size={15} />
-              Record payment
-            </Button>
-            <FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial', 'Refunded']} />
-            <FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} />
-          </div>
-        }
-      />
-
+      <PageHeader title="Payments & finance" description="Review transactions and record traceable corrections. This demo does not process refunds or charge cards." action={<div className="flex flex-wrap gap-2"><FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial', 'Adjusted']} /><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>} />
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Collected total" value={currency(financeOverview?.total_revenue ?? revenue)} caption="Total verified receipts" icon={BadgeIndianRupee} />
-        <MetricCard label="Online bookings" value={currency(financeOverview?.online_revenue ?? 248900)} caption="Total online revenue" icon={ArrowUpRight} tone="blue" />
-        <MetricCard label="Counter & UPI" value={currency(financeOverview?.offline_revenue ?? offlineRevenue)} caption="Offline and counter intake" icon={Wallet} tone="violet" />
-        <MetricCard label="Pending balance" value={currency(financeOverview?.pending_receivables ?? (pendingTotal || 18450))} caption="Outstanding from bookings" icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Collected · adjusted" value={currency(revenue)} caption="Original transactions plus corrections" icon={BadgeIndianRupee} />
+        <MetricCard label="Online bookings" value={currency(248900)} caption="Illustrative month total" icon={ArrowUpRight} tone="blue" />
+        <MetricCard label="Offline revenue" value={currency(105900)} caption="Illustrative month total" icon={Wallet} tone="violet" />
+        <MetricCard label="Pending refunds" value={currency(pendingRefundTotal)} caption={`${refundAdjustments.length} demo refund record(s)`} icon={CircleDollarSign} tone="amber" />
       </div>
 
       <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.8fr)]">
         <Card className="p-5 sm:p-6">
-          <div className="flex flex-wrap justify-between gap-3">
-            <div>
-              <h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2>
-              <p className="mt-1 text-xs text-slate-500">Monthly breakdown · ₹</p>
-            </div>
-            <FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} />
-          </div>
-          <div className="mt-4">
-            <ComparisonChart
-              data={
-                financeOverview?.comparison_chart && financeOverview.comparison_chart.length > 0
-                  ? financeOverview.comparison_chart
-                  : [
-                      { label: 'May', revenue: 18, expenses: 9 },
-                      { label: 'Jun', revenue: 22, expenses: 12 },
-                      { label: 'Jul', revenue: 19, expenses: 11 },
-                      { label: 'Aug', revenue: 26, expenses: 14 },
-                      { label: 'Sep', revenue: 31, expenses: 16 },
-                      { label: 'Oct', revenue: 35, expenses: 18 },
-                    ]
-              }
-            />
-          </div>
+          <div className="flex flex-wrap justify-between gap-3"><div><h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2><p className="mt-1 text-xs text-slate-500">Illustrative monthly summary · ₹</p></div><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>
+          <div className="mt-4"><ComparisonChart data={[{ label: 'May', revenue: 18, expenses: 9 }, { label: 'Jun', revenue: 22, expenses: 12 }, { label: 'Jul', revenue: 19, expenses: 11 }, { label: 'Aug', revenue: 26, expenses: 14 }, { label: 'Sep', revenue: 31, expenses: 16 }, { label: 'Oct', revenue: 35, expenses: 18 }]} /></div>
         </Card>
-
-        <Card className="p-5 sm:p-6">
-          <h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2>
-          <p className="mt-1 text-xs text-slate-500">FastAPI backend & live collections</p>
-          <div className="mt-4 space-y-3">
-            {[
-              ['Current collections', currency(financeOverview?.total_revenue ?? revenue), 'text-emerald-700'],
-              ['Operating expenses', currency(financeOverview?.operating_expenses ?? 72800), 'text-slate-800'],
-              ['Maintenance costs', currency(financeOverview?.maintenance_costs ?? 18450), 'text-slate-800'],
-              ['Estimated net', currency(financeOverview?.estimated_net ?? Math.max(0, (financeOverview?.total_revenue ?? revenue) - 91250)), 'text-emerald-700'],
-            ].map(([label, amount, tone]) => (
-              <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0">
-                <span className="text-slate-500">{label}</span>
-                <span className={`font-semibold ${tone}`}>{amount}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
+        <Card className="p-5 sm:p-6"><h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2><p className="mt-1 text-xs text-slate-500">Illustrative totals for October</p><div className="mt-4 space-y-3">{[['Current balance', '₹2,84,450', 'text-emerald-700'], ['Operating expenses', '₹72,800', 'text-slate-800'], ['Maintenance costs', '₹18,450', 'text-slate-800'], ['Estimated net', '₹2,11,650', 'text-emerald-700']].map(([label, amount, tone]) => <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0"><span className="text-slate-500">{label}</span><span className={`font-semibold ${tone}`}>{amount}</span></div>)}</div></Card>
       </div>
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2.5 sm:px-5">
-          <div className="flex gap-2">
-            <button
-              onClick={() => setSection('payments')}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                section === 'payments'
-                  ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Customer payments ({payments.length})
-            </button>
-            <button
-              onClick={() => setSection('expenses')}
-              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
-                section === 'expenses'
-                  ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Operational expenses ({expenses.length})
-            </button>
-          </div>
-        </div>
-
-        {section === 'payments' ? (
-          <>
-            <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2>
-                <p className="mt-1 text-xs text-slate-500">Recorded offline, counter, and digital payments</p>
-              </div>
-              <SearchField value={query} onChange={setQuery} placeholder="Search transactions…" />
-            </div>
-
-            <DataTable
-              rows={filtered}
-              columns={[
-                {
-                  key: 'id',
-                  label: 'Transaction',
-                  render: (row) => (
-                    <span className="font-semibold text-slate-800">
-                      <span className="inline-flex items-center gap-1.5">
-                        {row.id}
-                        {row.backendSynced && (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                            API
-                          </span>
-                        )}
-                      </span>
-                      <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span>
-                    </span>
-                  ),
-                },
-                { key: 'customer', label: 'Customer' },
-                { key: 'method', label: 'Method' },
-                { key: 'date', label: 'Date' },
-                { key: 'amount', label: 'Amount', render: (row) => currency(row.amount) },
-                { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-                {
-                  key: 'actions',
-                  label: '',
-                  render: (row) => (
-                    <div className="flex items-center justify-end gap-1.5">
-                      <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>
-                        <Eye size={15} />Details
-                      </Button>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-            <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
-              Showing {filtered.length} of {payments.length} transactions
-            </p>
-          </>
-        ) : (
-          <>
-            <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-900">Hub operating expenses</h2>
-                <p className="mt-1 text-xs text-slate-500">Rent, staff salaries, fleet maintenance, utilities, fuel & insurance</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <FilterSelect
-                  label="Category"
-                  value={expFilterCategory}
-                  onChange={setExpFilterCategory}
-                  options={[
-                    'All',
-                    'Rent & Operations',
-                    'Staff Salaries',
-                    'Maintenance',
-                    'Insurance & Taxes',
-                    'Fuel',
-                    'Utilities',
-                    'Marketing',
-                  ]}
-                />
-                <SearchField value={query} onChange={setQuery} placeholder="Search expenses…" />
-              </div>
-            </div>
-
-            <DataTable
-              rows={filteredExpenses}
-              columns={[
-                {
-                  key: 'id',
-                  label: 'Expense ID',
-                  render: (row) => (
-                    <span className="font-semibold text-slate-800">
-                      <span className="inline-flex items-center gap-1.5">
-                        {row.id}
-                        {row.backendSynced && (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                            API
-                          </span>
-                        )}
-                      </span>
-                      <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.category}</span>
-                    </span>
-                  ),
-                },
-                {
-                  key: 'title',
-                  label: 'Description / Payee',
-                  render: (row) => (
-                    <div>
-                      <span className="font-medium text-slate-900">{row.title}</span>
-                      {row.payee && <span className="mt-0.5 block text-[11px] text-slate-400">Payee: {row.payee}</span>}
-                    </div>
-                  ),
-                },
-                {
-                  key: 'payment_method',
-                  label: 'Method & Ref',
-                  render: (row) => (
-                    <div>
-                      <span className="text-xs text-slate-700">{row.payment_method}</span>
-                      {row.reference && <span className="mt-0.5 block text-[10px] text-slate-400">{row.reference}</span>}
-                    </div>
-                  ),
-                },
-                { key: 'date', label: 'Date' },
-                {
-                  key: 'amount',
-                  label: 'Amount',
-                  render: (row) => <span className="font-semibold text-rose-600">- {currency(row.amount)}</span>,
-                },
-                {
-                  key: 'status',
-                  label: 'Status',
-                  render: (row) => <StatusBadge status={row.status || 'Paid'} />,
-                },
-                {
-                  key: 'actions',
-                  label: '',
-                  render: (row) => (
-                    <div className="flex items-center justify-end">
-                      <Button
-                        variant="quiet"
-                        className="min-h-8 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                        onClick={() => handleDeleteExpense(row.id)}
-                      >
-                        <Trash2 size={14} />
-                      </Button>
-                    </div>
-                  ),
-                },
-              ]}
-            />
-            <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
-              Showing {filteredExpenses.length} of {expenses.length} operating expenses
-            </p>
-          </>
-        )}
+        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2><p className="mt-1 text-xs text-slate-500">Original transaction amounts remain unchanged; corrections are stored separately.</p></div><SearchField value={query} onChange={setQuery} placeholder="Search transactions…" /></div>
+        <DataTable rows={filtered} columns={[
+          { key: 'id', label: 'Transaction', render: (row) => <span className="font-semibold text-slate-800">{row.id}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span></span> },
+          { key: 'customer', label: 'Customer' }, { key: 'method', label: 'Method' }, { key: 'date', label: 'Date' },
+          { key: 'amount', label: 'Original / effective', render: (row) => <span>{currency(row.amount)}<span className="mt-1 block text-[11px] text-slate-500">Effective: {currency(effectiveAmount(row))}</span></span> },
+          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.refundStatus || (paymentAdjustments.some((item) => item.paymentId === row.id) ? 'Adjusted' : row.status)} /> },
+          { key: 'actions', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}>Details</Button>{isAdmin && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCorrectionForm(row) }}>Correct</Button>}</div> },
+        ]} />
       </Card>
-
-      {/* Record Payment Modal */}
-      {showRecordModal && (
-        <Modal
-          title="Record Counter / Offline Payment"
-          onClose={() => { if (!isSubmitting) setShowRecordModal(false) }}
-          footer={
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setShowRecordModal(false)} disabled={isSubmitting}>
-                Cancel
-              </Button>
-              <Button type="submit" form="record-payment-form" disabled={isSubmitting}>
-                {isSubmitting ? (
-                  <>
-                    <Loader2 size={15} className="animate-spin" />
-                    Recording...
-                  </>
-                ) : (
-                  <>
-                    <Check size={15} />
-                    Save payment
-                  </>
-                )}
-              </Button>
-            </div>
-          }
-        >
-          <form id="record-payment-form" onSubmit={handleRecordPayment} className="space-y-4">
-            {formError && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
-                {formError}
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Link to Booking (Optional)
-              </label>
-              <select
-                value={formBooking}
-                onChange={handleBookingSelect}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              >
-                <option value="">Counter Walk-in / Direct receipt</option>
-                {bookings.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.id} · {b.customer} ({b.vehicle}) — Pending: ₹{b.pending || 0}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Customer Name <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={formCustomer}
-                onChange={(e) => setFormCustomer(e.target.value)}
-                placeholder="e.g. Ramesh Patel"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Amount (₹) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  step="any"
-                  required
-                  value={formAmount}
-                  onChange={(e) => setFormAmount(e.target.value)}
-                  placeholder="e.g. 1500"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Payment Method
-                </label>
-                <select
-                  value={formMethod}
-                  onChange={(e) => setFormMethod(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                >
-                  <option value="UPI">UPI / GPay / PhonePe</option>
-                  <option value="Cash">Cash at Counter</option>
-                  <option value="Card">Debit / Credit Card</option>
-                  <option value="NetBanking">Net Banking</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Payment Status
-              </label>
-              <select
-                value={formStatus}
-                onChange={(e) => setFormStatus(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              >
-                <option value="Paid">Paid (Full settlement)</option>
-                <option value="Partial">Partial (Advance payment)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Notes / Reference ID (Optional)
-              </label>
-              <input
-                type="text"
-                value={formNotes}
-                onChange={(e) => setFormNotes(e.target.value)}
-                placeholder="e.g. UPI Ref: 4291823901 or Counter receipt #12"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Record Business Expense Modal */}
-      {showExpenseModal && (
-        <Modal
-          title="Record Hub Operating Expense"
-          onClose={() => { if (!isExpSubmitting) setShowExpenseModal(false) }}
-          footer={
-            <div className="flex justify-end gap-2">
-              <Button type="button" variant="secondary" onClick={() => setShowExpenseModal(false)} disabled={isExpSubmitting}>
-                Cancel
-              </Button>
-              <Button type="submit" form="record-expense-form" disabled={isExpSubmitting}>
-                {isExpSubmitting ? (
-                  <>
-                    <Loader2 size={15} className="animate-spin" />
-                    Recording...
-                  </>
-                ) : (
-                  <>
-                    <Check size={15} />
-                    Save expense
-                  </>
-                )}
-              </Button>
-            </div>
-          }
-        >
-          <form id="record-expense-form" onSubmit={handleRecordExpense} className="space-y-4">
-            {expFormError && (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
-                {expFormError}
-              </div>
-            )}
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Expense Category <span className="text-rose-500">*</span>
-              </label>
-              <select
-                value={expCategory}
-                onChange={(e) => setExpCategory(e.target.value)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              >
-                <option value="Rent & Operations">Rent & Operations (Facility Lease)</option>
-                <option value="Staff Salaries">Staff Salaries & Technicians</option>
-                <option value="Maintenance">Fleet Maintenance & Spare Parts</option>
-                <option value="Insurance & Taxes">Insurance Policies & Road Taxes</option>
-                <option value="Fuel">Fuel & EV Fast Charging Credits</option>
-                <option value="Utilities">Utilities (Electricity, Fiber Internet)</option>
-                <option value="Marketing">Marketing & Local Ads</option>
-                <option value="Misc">Miscellaneous Hub Expenses</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Expense Title / Description <span className="text-rose-500">*</span>
-              </label>
-              <input
-                type="text"
-                required
-                value={expTitle}
-                onChange={(e) => setExpTitle(e.target.value)}
-                placeholder="e.g. Indiranagar Hub Monthly Facility Lease"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Amount (₹) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="number"
-                  min="1"
-                  step="any"
-                  required
-                  value={expAmount}
-                  onChange={(e) => setExpAmount(e.target.value)}
-                  placeholder="e.g. 35000"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Payment Method
-                </label>
-                <select
-                  value={expMethod}
-                  onChange={(e) => setExpMethod(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                >
-                  <option value="Bank Transfer">Bank Transfer / NEFT / RTGS</option>
-                  <option value="UPI">UPI / GPay / PhonePe</option>
-                  <option value="Cash">Cash at Counter</option>
-                  <option value="Card">Corporate Debit/Credit Card</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Payee / Vendor (Optional)
-                </label>
-                <input
-                  type="text"
-                  value={expPayee}
-                  onChange={(e) => setExpPayee(e.target.value)}
-                  placeholder="e.g. Brigade Properties or Shell"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                  Payment Status
-                </label>
-                <select
-                  value={expStatus}
-                  onChange={(e) => setExpStatus(e.target.value)}
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-                >
-                  <option value="Paid">Paid (Settled)</option>
-                  <option value="Pending">Pending (Due)</option>
-                </select>
-              </div>
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
-                Notes / Invoice Ref (Optional)
-              </label>
-              <input
-                type="text"
-                value={expNotes}
-                onChange={(e) => setExpNotes(e.target.value)}
-                placeholder="e.g. Inv #OCT-482 or RTGS ref number"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
-              />
-            </div>
-          </form>
-        </Modal>
-      )}
-
-      {/* Detail Dialog with Refund Action */}
-      {selected && (
-        <Modal title={`Transaction ${selected.id}`} onClose={() => setSelected(null)}>
-          <div className="space-y-3">
-            {[
-              ['Transaction ID', selected.id],
-              ['Booking ID', selected.booking],
-              ['Customer', selected.customer],
-              ['Payment Method', selected.method],
-              ['Date', selected.date],
-              ['Amount', currency(selected.amount)],
-              ['Status', selected.status],
-              ['Notes', selected.notes || 'None'],
-              ['Backend Sync', selected.backendSynced ? 'Active (MongoDB)' : 'Synced'],
-            ].map(([label, value]) => (
-              <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
-                <span className="text-xs text-slate-500">{label}</span>
-                <span className="text-right text-xs font-medium text-slate-800">{value}</span>
-              </div>
-            ))}
-
-            {selected.status !== 'Refunded' && (
-              <div className="mt-4 pt-2">
-                <Button
-                  variant="secondary"
-                  className="w-full text-rose-600 hover:bg-rose-50 hover:text-rose-700"
-                  disabled={refundLoading}
-                  onClick={() => handleRefund(selected.id)}
-                >
-                  {refundLoading ? (
-                    <>
-                      <Loader2 size={14} className="animate-spin" />
-                      Processing refund...
-                    </>
-                  ) : (
-                    'Process refund for this transaction'
-                  )}
-                </Button>
-              </div>
-            )}
-          </div>
-        </Modal>
-      )}
+      {selected && <DetailDialog title={`Transaction ${selected.id}`} onClose={() => setSelected(null)} rows={[
+        ['Transaction ID', selected.id], ['Booking', selected.booking], ['Customer', selected.customer], ['Method', selected.method], ['Date', selected.date],
+        ['Original amount', currency(selected.amount)], ['Effective amount', currency(effectiveAmount(selected))], ['Original status', selected.status], ['Refund status', selected.refundStatus || 'No refund recorded'],
+        ...paymentAdjustments.filter((item) => item.paymentId === selected.id).flatMap((item, index) => [
+          [`Correction ${index + 1} · amount`, `${currency(item.difference)} (${currency(item.correctedAmount)} corrected total)`],
+          [`Correction ${index + 1} · reason`, item.reason],
+          [`Correction ${index + 1} · corrected by`, `${item.correctedBy || 'Demo Admin'} (${item.correctedByRole || 'Admin'})`],
+          [`Correction ${index + 1} · date`, new Date(item.correctedAt).toLocaleString()],
+        ]),
+      ]} />}
+      {correctionForm && isAdmin && <RecordForm
+        title={`Correct transaction · ${correctionForm.id}`}
+        onClose={() => { setCorrectionForm(null); setFormError('') }}
+        initialValues={{ correctedAmount: String(effectiveAmount(correctionForm)) }}
+        fields={[
+          { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
+          { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this transaction needs correction' },
+        ]}
+        onSave={saveCorrection}
+        externalError={formError}
+        saveLabel="Save correction"
+      />}
+      <p className="mt-3 text-[11px] text-slate-400">Demo only: correction records are kept in memory for this app session. No payment gateway, refund, or real money movement occurs.</p>
     </div>
   )
 }
@@ -2136,231 +1427,113 @@ function Maintenance() {
 }
 
 function Staff() {
-  const { staff = [], addRecord, updateRecord, deleteRecord, syncStaff } = useDemoData()
+  const [staff, setStaff] = useState([])
   const [tab, setTab] = useState('All')
   const [query, setQuery] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [isSyncing, setIsSyncing] = useState(false)
-  const [documentsByStaff, setDocumentsByStaff] = useState({})
-  const [documentTypes, setDocumentTypes] = useState({})
-  const [documentErrors, setDocumentErrors] = useState({})
-  const [replacingStaffDocument, setReplacingStaffDocument] = useState(null)
-  const [previewDocument, setPreviewDocument] = useState(null)
-  const [previewUrl, setPreviewUrl] = useState('')
 
-  useEffect(() => {
-    syncStaff?.()
-  }, [])
-
-  // Sync loaded documents from staff members
-  useEffect(() => {
-    const docMap = {}
-    staff.forEach((person) => {
-      if (Array.isArray(person.documents) && person.documents.length) {
-        docMap[person.id] = person.documents
-      }
+  async function staffRequest(path, options = {}) {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...options,
+      credentials: 'include',
+      headers: {
+        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...options.headers,
+      },
     })
-    setDocumentsByStaff((current) => ({
-      ...docMap,
-      ...current,
-    }))
-  }, [staff])
 
-  async function handleRefresh() {
-    setIsSyncing(true)
+    const contentType = response.headers.get('content-type') || ''
+    const data = contentType.includes('application/json')
+      ? await response.json().catch(() => ({}))
+      : await response.text().catch(() => '')
+
+    if (!response.ok) {
+      const detail = data && typeof data === 'object' ? data.detail : data
+      const message = Array.isArray(detail)
+        ? detail.map((item) => item?.msg || String(item)).join(', ')
+        : detail || `Request failed (${response.status})`
+      throw new Error(String(message))
+    }
+    return data
+  }
+
+  async function loadStaff() {
+    setLoading(true)
+    setError('')
     try {
-      if (syncStaff) await syncStaff()
+      const data = await staffRequest('/staff/')
+      setStaff(Array.isArray(data) ? data : (data.items || []))
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to load staff. Please try again.')
     } finally {
-      setIsSyncing(false)
+      setLoading(false)
     }
   }
 
   useEffect(() => {
-    if (!previewDocument) {
-      setPreviewUrl('')
-      return undefined
-    }
-
-    const url = previewDocument.file instanceof Blob ? URL.createObjectURL(previewDocument.file) : (previewDocument.url || '')
-    setPreviewUrl(url)
-    return () => {
-      if (previewDocument.file instanceof Blob) {
-        URL.revokeObjectURL(url)
-      }
-    }
-  }, [previewDocument])
+    loadStaff()
+    // Load once when the Staff page mounts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const filtered = staff.filter((person) =>
     (tab === 'All' || person.status === tab)
     && `${person.name || ''} ${person.role || ''} ${person.phone || ''}`.toLowerCase().includes(query.toLowerCase()),
   )
 
-  async function uploadDocuments(person, event) {
-    const files = Array.from(event.target.files || [])
-    const acceptedFiles = files.filter((file) => /\.(pdf|jpe?g|png)$/i.test(file.name))
-    const rejectedFiles = files.length - acceptedFiles.length
-
-    if (rejectedFiles) {
-      setDocumentErrors((current) => ({
-        ...current,
-        [person.id]: 'Only PDF, JPG, JPEG, and PNG files are supported.',
-      }))
-    } else {
-      setDocumentErrors((current) => ({ ...current, [person.id]: '' }))
-    }
-
-    if (acceptedFiles.length) {
-      const category = documentTypes[person.id] || 'ID Proof'
-      for (const file of acceptedFiles) {
-        try {
-          const uploaded = await staffService.uploadStaffDocument(person.id, category, file)
-          setDocumentsByStaff((current) => ({
-            ...current,
-            [person.id]: [
-              ...(current[person.id] || []),
-              uploaded || {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                name: file.name,
-                category,
-                file,
-              },
-            ],
-          }))
-        } catch (err) {
-          setDocumentsByStaff((current) => ({
-            ...current,
-            [person.id]: [
-              ...(current[person.id] || []),
-              {
-                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-                name: file.name,
-                category,
-                file,
-              },
-            ],
-          }))
-        }
-      }
-      if (syncStaff) await syncStaff()
-    }
-
-    event.target.value = ''
-  }
-
-  async function replaceStaffDocument(person, document, event) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    if (replacingStaffDocument) return
-
-    const extension = file.name.split('.').pop()?.toLowerCase()
-    const allowedTypes = {
-      pdf: 'application/pdf',
-      jpg: 'image/jpeg',
-      jpeg: 'image/jpeg',
-      png: 'image/png',
-    }
-    if (!allowedTypes[extension] || (file.type && file.type !== allowedTypes[extension])) {
-      setDocumentErrors((current) => ({ ...current, [person.id]: 'Only PDF, JPG, JPEG, and PNG files are supported.' }))
-      return
-    }
-    if (file.size > 10 * 1024 * 1024) {
-      setDocumentErrors((current) => ({ ...current, [person.id]: 'Documents must be 10 MB or smaller.' }))
-      return
-    }
-
-    const replacingKey = `${person.id}:${document.id}`
-    setReplacingStaffDocument(replacingKey)
-    setDocumentErrors((current) => ({ ...current, [person.id]: '' }))
+  async function createStaff(values) {
+    setSaving(true)
+    setError('')
+    setNotice('')
     try {
-      const updated = await staffService.replaceStaffDocument(person.id, document.id, file)
-      setDocumentsByStaff((current) => ({
-        ...current,
-        [person.id]: (current[person.id] || []).map((item) =>
-          item.id === document.id ? updated : item,
-        ),
-      }))
-      setPreviewDocument((current) => current?.id === document.id ? updated : current)
-      if (syncStaff) await syncStaff()
-      setNotice(`${document.category}: ${document.name} replaced successfully.`)
-    } catch (err) {
-      setDocumentErrors((current) => ({
-        ...current,
-        [person.id]: err.message || 'Failed to replace the document.',
-      }))
+      const created = await staffRequest('/staff/', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: values.name.trim(),
+          role: values.role,
+          phone: values.phone.trim(),
+          salary: Number(values.salary),
+          nextSalary: values.nextSalary || '',
+          attendance: 'Not recorded',
+          status: 'Active',
+        }),
+      })
+      setStaff((current) => [created, ...current])
+      setShowForm(false)
+      setNotice('Staff member added successfully.')
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to add staff member.')
     } finally {
-      setReplacingStaffDocument(null)
+      setSaving(false)
     }
-  }
-
-  function downloadDocument(document) {
-    const url = document.file instanceof Blob ? URL.createObjectURL(document.file) : (document.url || '')
-    const link = window.document.createElement('a')
-    link.href = url
-    link.download = document.name
-    window.document.body.append(link)
-    link.click()
-    link.remove()
-    if (document.file instanceof Blob) {
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-    }
-  }
-
-  async function deleteDocument(personId, documentId) {
-    setDocumentsByStaff((current) => ({
-      ...current,
-      [personId]: (current[personId] || []).filter((item) => item.id !== documentId),
-    }))
-    if (previewDocument?.id === documentId) setPreviewDocument(null)
-    try {
-      await staffService.deleteStaffDocument(personId, documentId)
-      if (syncStaff) await syncStaff()
-    } catch (_) {}
   }
 
   async function toggleStaffStatus(person) {
     const nextStatus = person.status === 'Active' ? 'Inactive' : 'Active'
-    updateRecord('staff', person.id, { status: nextStatus })
-    setNotice(`${person.name} is now ${nextStatus.toLowerCase()}.`)
+    setError('')
+    setNotice('')
     try {
-      await staffService.updateStaffStatus(person.id, nextStatus)
-      if (syncStaff) await syncStaff()
-    } catch (_) {}
-  }
-
-  async function handleDeleteStaff(person) {
-    if (!window.confirm(`Are you sure you want to remove ${person.name} from your team?`)) return
-    try {
-      await staffService.deleteStaff(person.id)
-      if (deleteRecord) deleteRecord('staff', person.id)
-      if (syncStaff) await syncStaff()
-      setNotice(`${person.name} removed successfully.`)
-    } catch (err) {
-      if (deleteRecord) deleteRecord('staff', person.id)
-      setNotice(`${person.name} removed locally.`)
+      const updated = await staffRequest(`/staff/${encodeURIComponent(person.id)}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
+      })
+      setStaff((current) => current.map((item) => item.id === person.id ? updated : item))
+      setSelected((current) => current?.id === person.id ? updated : current)
+      setNotice(`${person.name} is now ${nextStatus.toLowerCase()}.`)
+    } catch (requestError) {
+      setError(requestError.message || 'Unable to update staff status.')
     }
   }
 
   return (
     <div>
-      <PageHeader
-        title="Staff"
-        description="Manage your team, roles, attendance and payroll overview."
-        action={
-          <div className="flex items-center gap-2">
-            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
-              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
-              {isSyncing ? 'Syncing...' : 'Sync backend'}
-            </Button>
-            <Button onClick={() => { setNotice(''); setShowForm(true) }}>
-              <Plus size={16} />
-              Add staff
-            </Button>
-          </div>
-        }
-      />
+      <PageHeader title="Staff" description="Manage your team, roles, attendance and payroll overview." action={<Button onClick={() => { setError(''); setNotice(''); setShowForm(true) }}><Plus size={16} />Add staff</Button>} />
+      {error && <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">{error}</div>}
       {notice && <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">{notice}</div>}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="Team members" value={staff.length} caption="Saved in your workspace" icon={Users} />
@@ -2370,157 +1543,34 @@ function Staff() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Active', 'Inactive']} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search team members…" /></div>
-        <DataTable
-          rows={filtered}
-          emptyTitle="No team members added yet"
-          emptyText="Click 'Add staff' to register team members and fleet managers."
-          columns={[
-          { key: 'name', label: 'Team member', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></button> },
-          { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
-          { key: 'documents', label: 'Documents', render: (row) => {
-            const documents = documentsByStaff[row.id] || []
-            return (
-              <div className="min-w-[260px] space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <select
-                    aria-label={`Document type for ${row.name}`}
-                    value={documentTypes[row.id] || 'ID Proof'}
-                    onChange={(event) => setDocumentTypes((current) => ({ ...current, [row.id]: event.target.value }))}
-                    className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
-                  >
-                    {['Aadhaar Card', 'PAN Card', 'ID Proof', 'Resume', 'Joining Letter', 'Employment Contract', 'Other'].map((type) => <option key={type}>{type}</option>)}
-                  </select>
-                  <label className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
-                    <Upload size={13} aria-hidden="true" />
-                    Upload
-                    <input
-                      type="file"
-                      multiple
-                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                      onChange={(event) => uploadDocuments(row, event)}
-                      className="sr-only"
-                    />
-                  </label>
-                </div>
-                {documentErrors[row.id] && <p role="alert" className="text-[11px] text-rose-600">{documentErrors[row.id]}</p>}
-                {documents.length ? (
-                  <div className="space-y-1.5">
-                    {documents.map((document) => (
-                      <div key={document.id} className="flex min-w-0 items-center gap-1.5 text-[11px]">
-                        <FileText size={13} className="shrink-0 text-emerald-700" aria-hidden="true" />
-                        <span className="min-w-0 flex-1 truncate text-slate-700" title={`${document.category}: ${document.name}`}>
-                          <span className="font-medium">{document.category}: </span>{document.name}
-                        </span>
-                        <button type="button" onClick={() => setPreviewDocument(document)} aria-label={`View ${document.name}`} className="font-semibold text-emerald-800 hover:text-emerald-950">View</button>
-                        <button type="button" onClick={() => downloadDocument(document)} aria-label={`Download ${document.name}`} className="font-semibold text-slate-600 hover:text-slate-900">Download</button>
-                        <label className={`cursor-pointer font-semibold ${replacingStaffDocument ? 'text-slate-400' : 'text-emerald-800 hover:text-emerald-950'}`}>
-                          {replacingStaffDocument === `${row.id}:${document.id}` ? <Loader2 size={12} className="inline animate-spin" aria-label="Replacing" /> : 'Replace'}
-                          <input
-                            type="file"
-                            accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                            disabled={Boolean(replacingStaffDocument)}
-                            onChange={(event) => replaceStaffDocument(row, document, event)}
-                            className="sr-only"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => deleteDocument(row.id, document.id)}
-                          aria-label={`Delete ${document.name}`}
-                          className="grid size-6 shrink-0 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-700"
-                        >
-                          <Trash2 size={13} aria-hidden="true" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                ) : <p className="text-[11px] text-slate-400">No documents uploaded</p>}
-              </div>
-            )
-          } },
-          { key: 'salary', label: 'Monthly salary', render: (row) => currency(row.salary) },
-          { key: 'attendance', label: 'Attendance', render: (row) => row.attendance || 'Not recorded' },
-          { key: 'nextSalary', label: 'Next salary', render: (row) => row.nextSalary || '—' },
-          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'action', label: '', render: (row) => (
-            <div className="flex items-center gap-1.5">
-              <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>
-                {row.status === 'Active' ? 'Deactivate' : 'Activate'}
-              </Button>
-              <button
-                type="button"
-                onClick={() => handleDeleteStaff(row)}
-                title="Remove staff member"
-                aria-label={`Remove ${row.name}`}
-                className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          )},
-        ]} />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{`${filtered.length} staff member${filtered.length === 1 ? '' : 's'} shown`}</p>
+        {loading ? (
+          <div className="px-5 py-12 text-center text-sm text-slate-500">Loading staff from your workspace…</div>
+        ) : (
+          <DataTable rows={filtered} columns={[
+            { key: 'name', label: 'Team member', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></button> },
+            { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
+            { key: 'salary', label: 'Monthly salary', render: (row) => currency(row.salary) },
+            { key: 'attendance', label: 'Attendance', render: (row) => row.attendance || 'Not recorded' },
+            { key: 'nextSalary', label: 'Next salary', render: (row) => row.nextSalary || '—' },
+            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            { key: 'action', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>{row.status === 'Active' ? 'Deactivate' : 'Activate'}</Button> },
+          ]} />
+        )}
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{loading ? 'Loading records…' : `${filtered.length} staff member${filtered.length === 1 ? '' : 's'} shown`}</p>
       </Card>
-      {showForm && (
-        <RecordForm
-          title="Add team member"
-          onClose={() => setShowForm(false)}
-          fields={[
-            { name: 'name', label: 'Full name', required: true },
-            { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
-            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
-            { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
-            { name: 'nextSalary', label: 'Next salary date', type: 'date' },
-          ]}
-          onSave={async (values) => {
-            const payload = {
-              name: values.name.trim(),
-              role: values.role,
-              phone: values.phone.trim(),
-              salary: Number(values.salary),
-              attendance: '26 / 26 days',
-              nextSalary: values.nextSalary || '',
-              status: 'Active',
-            }
-            try {
-              const res = await staffService.createStaff(payload)
-              if (syncStaff) await syncStaff()
-              else {
-                addRecord('staff', {
-                  ...payload,
-                  id: res?.id || nextId('ST', staff),
-                  backendSynced: true,
-                })
-              }
-              setNotice('Staff member added successfully.')
-            } catch (err) {
-              addRecord('staff', {
-                ...payload,
-                id: nextId('ST', staff),
-                backendSynced: false,
-              })
-              setNotice('Staff member added locally.')
-            }
-            setShowForm(false)
-          }}
-          showDemoNote={false}
-        />
-      )}
+      {showForm && <RecordForm title="Add team member" onClose={() => { if (!saving) setShowForm(false) }} fields={[
+        { name: 'name', label: 'Full name', required: true },
+        { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
+        { name: 'phone', label: 'Phone number', type: 'tel', required: true },
+        { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
+        { name: 'nextSalary', label: 'Next salary date', type: 'date' },
+      ]} onSave={createStaff} saveLabel={saving ? 'Saving…' : 'Add staff'} showDemoNote={false} />}
       {selected && <DetailDialog title={selected.name} onClose={() => setSelected(null)} showDemoNote={false} rows={[
         ['Staff ID', selected.id], ['Full name', selected.name], ['Role', selected.role],
         ['Phone', selected.phone], ['Monthly salary', currency(selected.salary)],
         ['Attendance', selected.attendance || 'Not recorded'], ['Next salary', selected.nextSalary || '—'],
         ['Status', selected.status],
       ]} />}
-      {previewDocument && (
-        <Modal title={`${previewDocument.category} · ${previewDocument.name}`} onClose={() => setPreviewDocument(null)}>
-          {previewUrl && (previewDocument.file?.type === 'application/pdf' || /\.pdf$/i.test(previewDocument.name) ? (
-            <iframe title={previewDocument.name} src={previewUrl} className="h-[65vh] w-full rounded-lg border border-slate-200" />
-          ) : (
-            <img src={previewUrl} alt={previewDocument.name} className="max-h-[65vh] w-full rounded-lg object-contain" />
-          ))}
-        </Modal>
-      )}
     </div>
   )
 }
@@ -2536,28 +1586,18 @@ const reportSeries = {
 }
 
 function Reports() {
-  const { vehicles = [], bookings = [], customers = [], payments = [], maintenance = [] } = useDemoData()
+  const { vehicles, bookings, customers, payments, paymentAdjustments = [], refundAdjustments = [], cancellationHistory = [] } = useDemoData()
   const [tab, setTab] = useState('Overview')
-  const [backendReports, setBackendReports] = useState(null)
-  const sections = ['Overview', 'Bookings', 'Vehicles', 'Maintenance', 'Revenue']
-
-  useEffect(() => {
-    let active = true
-    async function fetchReports() {
-      try {
-        const full = await reportService.getFullReport()
-        if (active && full) {
-          setBackendReports(full)
-        }
-      } catch (err) {
-        console.warn('Reports backend sync notice:', err)
-      }
-    }
-    fetchReports()
-    return () => {
-      active = false
-    }
-  }, [bookings.length, vehicles.length, payments.length, maintenance.length])
+  const effectivePaymentRevenue = payments.reduce((sum, payment) => {
+    const corrections = paymentAdjustments
+      .filter((adjustment) => adjustment.paymentId === payment.id)
+      .reduce((total, adjustment) => total + Number(adjustment.difference || 0), 0)
+    return sum + Number(payment.amount || 0) + corrections
+  }, 0)
+  const totalRefunds = refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  const netPaymentRevenue = effectivePaymentRevenue - totalRefunds
+  const sections = Object.keys(reportSeries)
+  const data = reportSeries[tab].map((value, index) => ({ label: ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'][index], value }))
 
   function exportCsv() {
     const csvRows = [
@@ -2701,17 +1741,7 @@ function Reports() {
       />
 
       <div className="mb-5 flex flex-wrap gap-2">
-        {[
-          ['Total Revenue', currency(totalRev)],
-          ['Active Bookings', bookings.length],
-          ['Fleet Utilization', `${fleetUtil}%`],
-          ['Customers', customers.length],
-        ].map(([label, value]) => (
-          <Card key={label} className="min-w-36 flex-1 p-4">
-            <p className="text-xs text-slate-500">{label}</p>
-            <p className="mt-2 text-xl font-semibold text-slate-900">{value}</p>
-          </Card>
-        ))}
+        {[['Net payment revenue', currency(netPaymentRevenue)], ['Bookings', bookings.length], ['Vehicle utilization', '74%'], ['Customers', customers.length]].map(([label, value]) => <Card key={label} className="min-w-36 flex-1 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{value}</p></Card>)}
       </div>
 
       <Card className="overflow-hidden">
@@ -2753,45 +1783,8 @@ function Reports() {
       </Card>
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Card className="overflow-hidden">
-          <div className="p-5">
-            <h2 className="text-sm font-semibold text-slate-900">Top Vehicles by Bookings</h2>
-            <p className="mt-1 text-xs text-slate-500">Fleet ranking based on actual customer rentals</p>
-          </div>
-          <DataTable
-            rows={topVehicles}
-            columns={[
-              { key: 'name', label: 'Vehicle' },
-              { key: 'registration', label: 'Registration' },
-              { key: 'type', label: 'Type' },
-              {
-                key: 'reportBookings',
-                label: 'Bookings',
-                render: (row) => (
-                  <span className="font-semibold text-emerald-800">{row.reportBookings} rentals</span>
-                ),
-              },
-            ]}
-          />
-          {topVehicles.length === 0 && (
-            <p className="p-5 text-center text-xs text-slate-400">No vehicles available for ranking.</p>
-          )}
-        </Card>
-
-        <Card className="p-5">
-          <h2 className="text-sm font-semibold text-slate-900">Financial & Fleet Summary</h2>
-          <div className="mt-4 space-y-3 text-xs">
-            <p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">
-              Total collected payments stand at <strong>{currency(totalRev)}</strong> across verified counter and online transactions.
-            </p>
-            <p className="rounded-xl bg-amber-50 px-3.5 py-3 leading-5 text-amber-900">
-              Outstanding receivables pending from active rentals: <strong>{currency(totalPending)}</strong>.
-            </p>
-            <p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">
-              Fleet operations are tracking <strong>{vehicles.length}</strong> vehicles, <strong>{bookings.length}</strong> rental bookings, and <strong>{customers.length}</strong> registered customer profiles.
-            </p>
-          </div>
-        </Card>
+        <Card className="overflow-hidden"><div className="p-5"><h2 className="text-sm font-semibold text-slate-900">Top vehicles by bookings</h2><p className="mt-1 text-xs text-slate-500">Based on these illustrative sample records</p></div><DataTable rows={vehicles.slice(0, 4).map((vehicle, index) => ({ ...vehicle, reportBookings: [28, 23, 19, 15][index] }))} columns={[{ key: 'name', label: 'Vehicle' }, { key: 'registration', label: 'Registration' }, { key: 'type', label: 'Type' }, { key: 'reportBookings', label: 'Bookings', render: (row) => <span className="font-semibold text-slate-800">{row.reportBookings}</span> }]} /></Card>
+        <Card className="p-5"><h2 className="text-sm font-semibold text-slate-900">Recent report notes</h2><div className="mt-4 space-y-3 text-xs"><p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">Net payment total: {currency(netPaymentRevenue)} after {refundAdjustments.length} demo refund adjustment(s). {paymentAdjustments.length} payment correction(s) are recorded separately; original transactions remain unchanged.</p><p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">The current demo dataset contains {bookings.length} booking records, {customers.length} customer profiles and {cancellationHistory.length} cancellation record(s). Refunds remain marked pending in the demo and are not actually processed.</p></div></Card>
       </div>
     </div>
   )
