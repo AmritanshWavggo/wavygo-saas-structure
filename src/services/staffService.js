@@ -29,6 +29,15 @@ export const staffService = {
     })
   },
 
+  async replaceStaffDocument(staffId, documentId, file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return apiFetch(`/staff/${encodeURIComponent(staffId)}/documents/${encodeURIComponent(documentId)}`, {
+      method: 'PUT',
+      body: formData,
+    })
+  },
+
   async deleteStaffDocument(staffId, documentId) {
     return apiFetch(`/staff/${staffId}/documents/${documentId}`, {
       method: 'DELETE',

@@ -53,6 +53,19 @@ function VehicleCardImage({ vehicle, className }) {
   )
 }
 
+// Declared at module level on purpose. Defining it inside AddBooking() creates a new
+// component type every render, which remounts the input and loses focus on each keystroke.
+function Field({ label, name, value, onChange, error, placeholder, type = 'text', required = false, ...props }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-semibold text-slate-700">{label}{required && <span className="ml-1 text-rose-500">*</span>}</span>
+      {/* Always a string, so the input never flips between controlled and uncontrolled. */}
+      <input type={type} value={value ?? ''} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} {...props} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${error ? 'border-rose-300' : 'border-slate-200'}`} />
+      {error && <span className="mt-1 block text-xs text-rose-600">{error}</span>}
+    </label>
+  )
+}
+
 function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -307,14 +320,6 @@ function AddBooking() {
       backendSynced: false,
     })
   }
-
-  const Field = ({ label, name, value, onChange, error, placeholder, type = 'text', required = false, ...props }) => (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-semibold text-slate-700">{label}{required && <span className="ml-1 text-rose-500">*</span>}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} {...props} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${error ? 'border-rose-300' : 'border-slate-200'}`} />
-      {error && <span className="mt-1 block text-xs text-rose-600">{error}</span>}
-    </label>
-  )
 
   if (confirmation) {
     return (

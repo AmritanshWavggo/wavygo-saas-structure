@@ -1,3 +1,4 @@
+
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -50,8 +51,10 @@ class LoginRequest(BaseModel):
     @classmethod
     def validate_email(cls, value: str) -> str:
         value = normalize_email(value)
+
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
             raise ValueError("Enter a valid email address.")
+
         return value
 
 
@@ -162,6 +165,7 @@ def login(
         })
     except PyMongoError as exc:
         logger.exception("Vendor authentication lookup failed.")
+
         raise HTTPException(
             status_code=503,
             detail="Authentication service is unavailable.",
@@ -324,6 +328,12 @@ def login(
         "success": True,
         "ip_address": current_ip,
         "user_agent": current_agent,
+        "created_at": now
+    })
+
+    # Clear failed login attempts after successful login
+    attempts.delete_many({
+        "key": attempt_key
         "created_at": now,
     })
 

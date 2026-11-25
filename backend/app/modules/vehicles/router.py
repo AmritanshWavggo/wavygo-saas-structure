@@ -26,6 +26,7 @@ Data rules enforced here:
 from __future__ import annotations
 
 import logging
+import uuid
 import re
 from datetime import datetime, timezone
 from typing import Annotated, Any, Optional, Union
@@ -748,6 +749,7 @@ def update_vehicle(
     new_photos: list[UploadFile] = [],
     new_documents: list[UploadFile] = [],
     new_document_types: list[str] = Form(default=[], alias="newDocumentTypes"),
+    new_document_ids: list[str] = Form(default=[], alias="newDocumentIds"),
     # Public IDs of existing photos/documents to remove
     remove_photo_ids: list[str] = Form(default=[], alias="removePhotoIds"),
     remove_document_ids: list[str] = Form(default=[], alias="removeDocumentIds"),
@@ -961,6 +963,11 @@ def update_vehicle(
                 f"Got {len(new_document_types)} types for {len(new_documents)} files."
             ),
         )
+    if new_document_ids and len(new_document_ids) != len(new_documents):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="newDocumentIds must have one entry per new document file.",
+        )
     new_doc_type_enums: list[DocumentType] = []
     for dt in new_document_types:
         new_doc_type_enums.append(_check_enum(dt, DocumentType, "documentType"))
@@ -992,7 +999,7 @@ def update_vehicle(
                 "publicId": result["public_id"],
             })
 
-        for doc_file, doc_type in zip(new_documents, new_doc_type_enums):
+        for index, (doc_file, doc_type) in enumerate(zip(new_documents, new_doc_type_enums)):
             file_bytes = doc_file.file.read()
             rtype = _cloudinary_resource_type(doc_file.content_type or "image/jpeg")
             result = cloudinary_service.upload_file(
@@ -1000,6 +1007,7 @@ def update_vehicle(
             )
             newly_uploaded.append({"publicId": result["public_id"], "resourceType": rtype})
             new_doc_models.append({
+                "id": new_document_ids[index] if new_document_ids else uuid.uuid4().hex,
                 "type": doc_type.value,
                 "url": result["url"],
                 "publicId": result["public_id"],
