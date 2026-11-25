@@ -32,6 +32,7 @@ class MaintenanceService:
         except Exception:
             return None
 
+    # FIX: Detect replica set / mongos capability to decide between multi-doc transactions or guarded CAS fallback
     def _use_transactions(self, db) -> bool:
         """Detect transaction capability once; standalone Mongo uses the guarded fallback."""
         if self._transactions_supported is None:
@@ -46,6 +47,7 @@ class MaintenanceService:
             )
         return self._transactions_supported
 
+    # FIX: Overlap check between maintenance schedule and rental booking dates
     @staticmethod
     def _maintenance_overlaps_booking(payload: MaintenanceCreate, booking: dict[str, Any]) -> bool:
         rental = booking.get("rental_details") or {}
@@ -135,6 +137,7 @@ class MaintenanceService:
         for item in initial:
             self._memory_maintenance[item["id"]] = item
 
+    # FIX: Centralized helper to update operational availability (availability & fleetAvailability), with optional guard against overriding Rented vehicles
     def set_vehicle_operational_state(self, vehicle_id_or_name: str, availability: str, tenant_id: Optional[str] = None, require_not_rented: bool = False):
         """The sole maintenance-module writer for both operational availability fields."""
         db = self._get_db()
@@ -142,6 +145,7 @@ class MaintenanceService:
             filt: dict[str, Any] = {"$or": [{"id": vehicle_id_or_name}, {"_id": vehicle_id_or_name}, {"makeModel": vehicle_id_or_name}, {"name": vehicle_id_or_name}]}
             if tenant_id:
                 filt = {"$and": [filt, {"$or": [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
+            # FIX: Ensure a vehicle with an active rental is never silently overridden
             if require_not_rented:
                 filt = {"$and": [filt, {"availability": {"$ne": "Rented"}}, {"fleetAvailability": {"$ne": "Rented"}}]}
             previous = db["vehicles"].find_one_and_update(filt, {"$set": {"fleetAvailability": availability, "availability": availability, "updatedAt": datetime.now(timezone.utc).isoformat()}}, return_document=ReturnDocument.BEFORE)
@@ -202,13 +206,17 @@ class MaintenanceService:
             # A transactional implementation is intentionally deferred until all
             # maintenance writes can share a session.
             self._use_transactions(db)
+            # FIX: Check for active rental before sending vehicle to maintenance
             active = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"$or": [{"vehicle_details.id": vehicle_identifier}, {"vehicle": payload.vehicle}]}]})
             if active:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Vehicle has an active rental")
+            # FIX: Check for overlapping confirmed or upcoming bookings
             candidates = db["bookings"].find({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Confirmed", "Upcoming"]}}, {"$or": [{"vehicle_details.id": vehicle_identifier}, {"vehicle": payload.vehicle}]}]})
             conflicts = [item for item in candidates if self._maintenance_overlaps_booking(payload, item)]
             if conflicts:
-                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Maintenance conflicts with bookings: {', '.join(f'{item.get('id')} ({item.get('dates')})' for item in conflicts)}")
+                # FIX: use double quotes inside nested f-string for Python < 3.12 compatibility
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Maintenance conflicts with bookings: " + ", ".join(f'{item.get("id")} ({item.get("dates")})' for item in conflicts))
+            # FIX: Transition vehicle operational availability to Maintenance, requiring vehicle is not currently rented
             previous_vehicle = self.set_vehicle_operational_state(vehicle_identifier, "Maintenance", tenant_id=tenant_id, require_not_rented=True)
             try:
                 db["maintenance"].replace_one({"id": m_id}, {**record, "_id": m_id}, upsert=True)
@@ -217,6 +225,7 @@ class MaintenanceService:
                     db["vehicles"].update_one({"_id": previous_vehicle["_id"]}, {"$set": {"availability": previous_vehicle.get("availability"), "fleetAvailability": previous_vehicle.get("fleetAvailability")}})
                 raise
         else:
+            # FIX: Set operational state to Maintenance in memory fallback
             self.set_vehicle_operational_state(vehicle_identifier, "Maintenance")
 
         try:

@@ -100,7 +100,7 @@ function Dashboard() {
         ),
       )
 
-      // 2. Inform backend API. Operational status is always re-read from it.
+      // FIX: Inform backend API; operational status is always re-read from backend rather than mutated locally
       await dashboardService.markArrival(arrival.bookingId)
 
       // 3. Re-sync live data from backend
@@ -134,6 +134,7 @@ function Dashboard() {
     }
   }, [dateRange, bookings.length, vehicles, payments.length, vehiclesLoading])
 
+  // FIX: Resolve vehicle operational availability from fleetAvailability or availability
   const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
   const rentedVehicles = vehicles.filter((v) => vehicleState(v) === 'Rented')
   const availableVehicles = vehicles.filter((v) => vehicleState(v) === 'Available')
@@ -421,6 +422,7 @@ function Dashboard() {
                   <p className="truncate text-xs font-semibold text-slate-800">{vehicle.name}</p>
                   <p className="mt-1 text-[11px] text-slate-400">{vehicle.registration}</p>
                 </div>
+                {/* FIX: Render badge using canonical operational availability */}
                 <StatusBadge status={vehicleState(vehicle)} />
               </div>
             ))}

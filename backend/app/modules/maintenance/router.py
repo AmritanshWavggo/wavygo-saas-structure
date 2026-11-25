@@ -43,6 +43,7 @@ def create_maintenance(payload: MaintenanceCreate, request: Request) -> Maintena
         tenant_id = _get_tenant_id(request)
         return maintenance_service.create_maintenance(payload, tenant_id=tenant_id)
     except HTTPException:
+        # FIX: Re-raise HTTPException directly to preserve 409 status code on active rental conflict
         raise
     except Exception as exc:
         raise HTTPException(

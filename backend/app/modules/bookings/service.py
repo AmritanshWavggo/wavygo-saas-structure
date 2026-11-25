@@ -82,6 +82,7 @@ class BookingService:
         doc["pending"] = outstanding
         return doc
 
+    # FIX: Check if rental dates overlap with open maintenance schedule
     @staticmethod
     def _dates_overlap(start: str, end: str, other_start: str, other_end: str) -> bool:
         """Return whether two inclusive ISO-date ranges overlap."""
@@ -93,6 +94,7 @@ class BookingService:
             # A malformed open-maintenance date must not make the vehicle bookable.
             return True
 
+    # FIX: Single booking-admission guard: reject booking if vehicle is under maintenance or overlaps open maintenance
     def assert_vehicle_bookable(
         self,
         vehicle_id: str,
@@ -115,6 +117,7 @@ class BookingService:
             vehicle_conditions.extend([{"makeModel": vehicle_name}, {"name": vehicle_name}])
         tenant_conditions = [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]
         vehicle = db["vehicles"].find_one({"$and": [{"$or": vehicle_conditions}, {"$or": tenant_conditions}]})
+        # FIX: Reject vehicles whose operational availability is Maintenance
         if vehicle and (vehicle.get("availability") == "Maintenance" or vehicle.get("fleetAvailability") == "Maintenance"):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -133,6 +136,7 @@ class BookingService:
                 ]
             }
         )
+        # FIX: Check for date conflicts against all open maintenance jobs
         for record in open_maintenance:
             if self._dates_overlap(start_date, end_date, record.get("start"), record.get("expected") or record.get("start")):
                 raise HTTPException(
@@ -144,6 +148,7 @@ class BookingService:
         now_dt = datetime.now(timezone.utc)
         now_str = now_dt.isoformat()
         db = self._get_db()
+        # FIX: Validate vehicle is bookable before booking creation begins
         self.assert_vehicle_bookable(
             payload.vehicle.vehicle_id,
             payload.rental.start_date,
@@ -605,6 +610,7 @@ class BookingService:
             refs.append({"_id": ObjectId(vehicle_id)})
         return {"$and": [{"$or": refs}, {"$or": [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
 
+    # FIX: Helper to verify if vehicle has active/ongoing maintenance jobs
     def _has_open_maintenance(self, db, booking: dict[str, Any], tenant_id: str) -> bool:
         details = booking.get("vehicle_details") or {}
         vehicle_id = details.get("id") or booking.get("vehicle")
@@ -651,6 +657,7 @@ class BookingService:
         booking = db["bookings"].find_one(self._tenant_filter(booking_id, tenant_id, "Confirmed"))
         if not booking:
             raise HTTPException(status_code=409, detail="Handover requires a Confirmed booking.")
+        # FIX: Block vehicle handover if vehicle was put under maintenance while confirmed
         if self._has_open_maintenance(db, booking, tenant_id):
             raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
         vehicle_id = (booking.get("vehicle_details") or {}).get("id") or booking.get("vehicle")
@@ -709,6 +716,7 @@ class BookingService:
         updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, "Active"), update, return_document=ReturnDocument.AFTER)
         if not updated:
             raise HTTPException(status_code=409, detail="Booking is no longer Active; return was not applied.")
+        # FIX: On rental return, set vehicle state to Maintenance if open maintenance exists, otherwise Under Review
         vehicle_state = "Maintenance" if self._has_open_maintenance(db, booking, tenant_id) else "Under Review"
         db["vehicles"].update_one(self._vehicle_filter(booking, tenant_id), {"$set": {"fleetAvailability": vehicle_state, "availability": vehicle_state, "updatedAt": stamp}})
         if added:
@@ -732,6 +740,7 @@ class BookingService:
         vehicle_filter = self._vehicle_filter(updated, tenant_id)
         vehicle_id = (updated.get("vehicle_details") or {}).get("id") or updated.get("vehicle")
         holder = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"id": {"$ne": booking_id}}, {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": updated.get("vehicle")}]}]})
+        # FIX: On booking completion, set vehicle state to Maintenance if open maintenance exists, otherwise Available
         if not holder:
             vehicle_state = "Maintenance" if self._has_open_maintenance(db, updated, tenant_id) else "Available"
             db["vehicles"].update_one(vehicle_filter, {"$set": {"fleetAvailability": vehicle_state, "availability": vehicle_state, "updatedAt": stamp}})

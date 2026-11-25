@@ -92,6 +92,7 @@ const badgeStyles = {
 }
 
 export function StatusBadge({ status }) {
+  // FIX: Map backend 'Maintenance' operational availability to 'Under Maintenance' UI display label
   const label = status === 'Maintenance' ? 'Under Maintenance' : status
   return (
     <span

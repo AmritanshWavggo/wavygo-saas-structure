@@ -106,6 +106,7 @@ def _get_bookings_col(db=None):
     return db[_BOOKINGS_COLLECTION]
 
 
+# FIX: Access maintenance collection to verify open jobs before vehicle state mutations
 def _get_maintenance_col(db=None):
     """Return the maintenance collection.  Raises 503 if DB is unavailable."""
     if db is None:
@@ -165,6 +166,7 @@ def _vehicle_query(vehicle_id: str, tenant: Any = None) -> dict[str, Any]:
     return base_query
 
 
+# FIX: Guard against manual Available/Rented state changes that would bypass an open maintenance or rental workflow
 def _operational_state_change_is_blocked(existing: dict[str, Any], tenant: Any) -> bool:
     """Whether a manual Available/Rented state change would bypass an open workflow."""
     tenant_id = _extract_tenant_id(tenant)
@@ -887,11 +889,13 @@ def update_vehicle(
 
     fleet_avail_enum = _check_enum(fleet_availability, FleetAvailability, "fleetAvailability")
     if fleet_avail_enum is not None:
+        # FIX: Forbid manual change to Available/Rented if vehicle is under maintenance or active rental
         if fleet_avail_enum.value in ("Available", "Rented") and _operational_state_change_is_blocked(existing, tenant):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Vehicle availability cannot be changed while maintenance or an active rental is open.",
             )
+        # FIX: Keep fleetAvailability and availability in sync
         set_doc["fleetAvailability"] = fleet_avail_enum.value
         set_doc["availability"] = fleet_avail_enum.value
 

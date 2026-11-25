@@ -1913,6 +1913,7 @@ function Maintenance() {
             <div className="flex gap-1">
               <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>History</Button>
               {row.status === 'Ongoing' && (
+                // FIX: Complete maintenance via backend and refresh live vehicle state instead of local mutation
                 <Button variant="quiet" className="min-h-8 px-2.5 text-emerald-700 hover:bg-emerald-50" onClick={async () => {
                   try {
                     await maintenanceService.completeMaintenance(row.id)
@@ -1945,6 +1946,7 @@ function Maintenance() {
             { name: 'cost', label: 'Estimated cost (₹)', type: 'number', min: 0, required: true },
             { name: 'payment', label: 'Payment status', type: 'select', options: ['Pending', 'Paid'], required: true },
           ]}
+          // FIX: Persist maintenance to backend and sync vehicle operational state
           onSave={async (values) => {
             try {
               await maintenanceService.createMaintenance({
@@ -2372,6 +2374,7 @@ function Reports() {
   const totalPending =
     backendReports?.summary?.total_pending ??
     bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+  // FIX: Resolve vehicle operational availability from fleetAvailability or availability
   const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
   const rentedVehiclesCount = vehicles.filter((v) => vehicleState(v) === 'Rented').length
   const fleetUtil =
