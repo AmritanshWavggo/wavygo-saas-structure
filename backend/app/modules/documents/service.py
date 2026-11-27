@@ -439,6 +439,36 @@ class DocumentService:
                 if doc:
                     doc.pop("_id", None)
                     return DocumentResponse(**doc)
+
+                # Check vehicles collection for vehicle-attached document
+                v_filt: dict[str, Any] = {
+                    "$or": [
+                        {"documents.publicId": doc_id},
+                        {"documents.public_id": doc_id},
+                        {"documents.id": doc_id},
+                    ]
+                }
+                if tenant_id:
+                    v_filt = {"$and": [v_filt, {"$or": [{"vendor_id": tenant_id}, {"tenant_id": tenant_id}]}]}
+                v = db["vehicles"].find_one(v_filt)
+                if v:
+                    for d in (v.get("documents") or []):
+                        pid = d.get("publicId") or d.get("public_id") or d.get("id")
+                        if pid == doc_id:
+                            return DocumentResponse(
+                                id=doc_id,
+                                name=f"{v.get('brand', '')} {v.get('model', '')} {d.get('type', 'Document')}".strip(),
+                                category=d.get("type", "Vehicle Document"),
+                                scope="Vehicle",
+                                vehicle_id=str(v.get("_id") or v.get("id")),
+                                vehicle_name=f"{v.get('brand', '')} {v.get('model', '')}".strip(),
+                                file_url=d.get("url", ""),
+                                public_id=pid,
+                                status=d.get("status", "Verified"),
+                                date=datetime.now(timezone.utc).strftime("%b %d, %Y"),
+                                created_at=datetime.now(timezone.utc).isoformat(),
+                                updated_at=datetime.now(timezone.utc).isoformat(),
+                            )
             except Exception:
                 pass
 
@@ -473,7 +503,12 @@ class DocumentService:
         db = self._get_db()
         if db is not None:
             try:
-                db["documents"].update_one({"$or": [{"id": doc_id}, {"_id": doc_id}]}, {"$set": update_dict})
+                res = db["documents"].update_one({"$or": [{"id": doc_id}, {"_id": doc_id}]}, {"$set": update_dict})
+                if res.matched_count == 0 and payload.status:
+                    db["vehicles"].update_one(
+                        {"$or": [{"documents.publicId": doc_id}, {"documents.public_id": doc_id}, {"documents.id": doc_id}]},
+                        {"$set": {"documents.$.status": payload.status}}
+                    )
             except Exception:
                 pass
 

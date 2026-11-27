@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import List, Optional, Annotated, Any
-from fastapi import APIRouter, HTTPException, Query, Request, Depends, status
+from typing import Annotated, Any, List, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.modules.auth.security import get_optional_vendor, get_current_vendor
 from app.modules.bookings.schemas import (
+    BookingSendOtpRequest,
+    BookingVerifyOtpRequest,
     OfflineBookingCreate,
     OfflineBookingUpdate,
     OfflineBookingResponse,
@@ -118,3 +120,66 @@ def record_booking_payment(
             detail=f"Booking with ID '{booking_id}' not found.",
         )
     return updated
+
+
+@router.post(
+    "/offline/send-otp",
+    summary="Send OTP for bike rental pickup or return confirmation",
+    description="Dispatches SMS OTP to customer's mobile number via Edumarc SMS.",
+)
+def send_booking_otp_endpoint(payload: BookingSendOtpRequest) -> dict[str, Any]:
+    from app.services.otp_service import generate_otp, store_booking_otp
+    from app.services.sms_service import send_sms_otp
+
+    otp = generate_otp(6)
+    store_booking_otp(payload.phone, payload.purpose, otp, ttl_seconds=600)
+    if payload.booking_id:
+        store_booking_otp(payload.booking_id, payload.purpose, otp, ttl_seconds=600)
+
+    sms_sent = send_sms_otp(payload.phone, otp, payload.customer_name)
+    return {
+        "success": True,
+        "sms_sent": sms_sent,
+        "purpose": payload.purpose,
+        "message": f"OTP sent to {payload.phone} for {payload.purpose} confirmation.",
+    }
+
+
+@router.post(
+    "/offline/verify-otp",
+    summary="Verify OTP for bike rental pickup or return confirmation",
+    description="Verifies the SMS OTP code. If purpose is 'return', auto-completes booking and ends the ride.",
+)
+def verify_booking_otp_endpoint(
+    payload: BookingVerifyOtpRequest,
+    request: Request,
+) -> dict[str, Any]:
+    from app.services.otp_service import verify_booking_otp
+
+    # Check by phone first, or by booking_id
+    is_valid = verify_booking_otp(payload.phone, payload.purpose, payload.otp)
+    if not is_valid and payload.booking_id:
+        is_valid = verify_booking_otp(payload.booking_id, payload.purpose, payload.otp)
+
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code.",
+        )
+
+    completed_booking = None
+    if payload.purpose == "return" and payload.booking_id:
+        tenant_id = _get_tenant_id(request)
+        completed_booking = booking_service.update_booking(
+            payload.booking_id,
+            OfflineBookingUpdate(status="Completed"),
+            tenant_id=tenant_id,
+        )
+
+    return {
+        "success": True,
+        "verified": True,
+        "purpose": payload.purpose,
+        "message": f"{payload.purpose.capitalize()} verified and confirmed successfully.",
+        "booking": completed_booking.model_dump() if completed_booking else None,
+    }

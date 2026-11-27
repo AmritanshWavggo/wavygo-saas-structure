@@ -19,7 +19,9 @@ export async function apiFetch(endpoint, options = {}) {
 
   const token =
     typeof localStorage !== 'undefined'
-      ? localStorage.getItem('access_token') || sessionStorage.getItem('access_token')
+      ? localStorage.getItem('access_token') ||
+        sessionStorage.getItem('access_token') ||
+        (sessionStorage.getItem('wavygo-demo-access') ? 'wavygo-demo-access' : null)
       : null
 
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData

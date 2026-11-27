@@ -1,4 +1,4 @@
-import { apiFetch } from './apiClient.js'
+import { apiFetch, API_BASE_URL } from './apiClient.js'
 
 export const staffService = {
   async listStaff() {
@@ -12,10 +12,23 @@ export const staffService = {
     })
   },
 
+  async updateStaff(staffId, payload) {
+    return apiFetch(`/staff/${encodeURIComponent(staffId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    })
+  },
+
   async updateStaffStatus(staffId, status) {
     return apiFetch(`/staff/${staffId}/status`, {
       method: 'PATCH',
       body: JSON.stringify({ status }),
+    })
+  },
+
+  async listStaffDocuments(staffId) {
+    return apiFetch(`/staff/${encodeURIComponent(staffId)}/documents`, {
+      method: 'GET',
     })
   },
 
@@ -49,7 +62,61 @@ export const staffService = {
       method: 'DELETE',
     })
   },
+
+  async downloadStaffDocument(staffId, documentId, filename) {
+    const token =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('access_token') ||
+          sessionStorage.getItem('access_token') ||
+          (sessionStorage.getItem('wavygo-demo-access') ? 'wavygo-demo-access' : null)
+        : null
+
+    const res = await fetch(
+      `${API_BASE_URL}/staff/${encodeURIComponent(staffId)}/documents/${encodeURIComponent(documentId)}/download`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    )
+    if (!res.ok) {
+      throw new Error(`Failed to download document: ${res.statusText}`)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || 'document'
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 10000)
+  },
+
+  async getStaffDocumentBlobUrl(staffId, documentId) {
+    const token =
+      typeof localStorage !== 'undefined'
+        ? localStorage.getItem('access_token') ||
+          sessionStorage.getItem('access_token') ||
+          (sessionStorage.getItem('wavygo-demo-access') ? 'wavygo-demo-access' : null)
+        : null
+
+    const res = await fetch(
+      `${API_BASE_URL}/staff/${encodeURIComponent(staffId)}/documents/${encodeURIComponent(documentId)}/download`,
+      {
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      }
+    )
+    if (!res.ok) {
+      throw new Error(`Failed to load document preview: ${res.statusText}`)
+    }
+    const blob = await res.blob()
+    return URL.createObjectURL(blob)
+  },
 }
+
 
 export default staffService
 

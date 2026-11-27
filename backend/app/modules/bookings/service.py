@@ -8,7 +8,7 @@ import uuid
 from typing import Optional, List, Dict, Any
 from bson import ObjectId
 
-from app.db.mongodb import get_database
+from app.db.mongodb import create_mongo_client, get_database, mongo_transaction
 from app.modules.bookings.schemas import (
     OfflineBookingCreate,
     OfflineBookingUpdate,
@@ -27,6 +27,12 @@ class BookingService:
     def _get_db(self):
         try:
             return get_database()
+        except Exception:
+            return None
+
+    def _get_client(self):
+        try:
+            return create_mongo_client()
         except Exception:
             return None
 
@@ -76,9 +82,110 @@ class BookingService:
         doc["pending"] = outstanding
         return doc
 
+    def check_vehicle_overlap(
+        self,
+        vehicle_id: str,
+        vehicle_name: str,
+        start_date: str,
+        end_date: str,
+        pickup_time: Optional[str] = "10:00",
+        return_time: Optional[str] = "10:00",
+        exclude_booking_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
+        req_p = (pickup_time or "10:00").strip()
+        req_r = (return_time or "10:00").strip()
+        req_start_iso = f"{start_date.strip()}T{req_p}"
+        req_end_iso = f"{end_date.strip()}T{req_r}"
+
+        # 1. MongoDB check
+        db = self._get_db()
+        if db is not None:
+            try:
+                if vehicle_id:
+                    v_query: dict[str, Any] = {
+                        "$or": [
+                            {"vehicle_details.id": vehicle_id},
+                            {"vehicle_id": vehicle_id},
+                        ],
+                        "status": {"$nin": ["Cancelled", "Completed"]},
+                    }
+                else:
+                    v_query: dict[str, Any] = {
+                        "$or": [
+                            {"vehicle_details.name": vehicle_name},
+                            {"vehicle": vehicle_name},
+                        ],
+                        "status": {"$nin": ["Cancelled", "Completed"]},
+                    }
+                if exclude_booking_id:
+                    v_query["id"] = {"$ne": exclude_booking_id}
+
+                candidates = list(db["bookings"].find(v_query))
+                for c in candidates:
+                    r_details = c.get("rental_details") or {}
+                    c_start = r_details.get("start_date") or c.get("startDate")
+                    c_end = r_details.get("end_date") or c.get("endDate")
+                    if c_start and c_end:
+                        c_p = (r_details.get("pickup_time") or "10:00").strip()
+                        c_r = (r_details.get("return_time") or "10:00").strip()
+                        c_start_iso = f"{c_start}T{c_p}"
+                        c_end_iso = f"{c_end}T{c_r}"
+                        if req_start_iso < c_end_iso and c_start_iso < req_end_iso:
+                            return c
+            except Exception as e:
+                logger.warning("Could not check MongoDB booking overlap: %s", e)
+
+        # 2. In-memory check
+        if self._memory_bookings:
+            for b_id, b_data in self._memory_bookings.items():
+                if exclude_booking_id and b_id == exclude_booking_id:
+                    continue
+                if b_data.get("status") in ["Cancelled", "Completed"]:
+                    continue
+
+                if vehicle_id:
+                    existing_v_id = b_data.get("vehicle_details", {}).get("id") or b_data.get("vehicle_id")
+                    if existing_v_id != vehicle_id:
+                        continue
+                else:
+                    v_match = (
+                        b_data.get("vehicle") == vehicle_name
+                        or b_data.get("vehicle_details", {}).get("name") == vehicle_name
+                    )
+                    if not v_match:
+                        continue
+
+                r_details = b_data.get("rental_details") or {}
+                c_start = r_details.get("start_date") or b_data.get("startDate")
+                c_end = r_details.get("end_date") or b_data.get("endDate")
+                if c_start and c_end:
+                    c_p = (r_details.get("pickup_time") or "10:00").strip()
+                    c_r = (r_details.get("return_time") or "10:00").strip()
+                    c_start_iso = f"{c_start}T{c_p}"
+                    c_end_iso = f"{c_end}T{c_r}"
+                    if req_start_iso < c_end_iso and c_start_iso < req_end_iso:
+                        return b_data
+
+        return None
+
     def create_offline_booking(self, payload: OfflineBookingCreate, tenant_id: Optional[str] = None) -> OfflineBookingResponse:
         now_dt = datetime.now(timezone.utc)
         now_str = now_dt.isoformat()
+
+        # Check timing overlap with existing active bookings for this vehicle
+        conflict = self.check_vehicle_overlap(
+            vehicle_id=payload.vehicle.vehicle_id,
+            vehicle_name=payload.vehicle.vehicle_name,
+            start_date=payload.rental.start_date,
+            end_date=payload.rental.end_date,
+            pickup_time=payload.rental.pickup_time,
+            return_time=payload.rental.return_time,
+            tenant_id=tenant_id,
+        )
+        if conflict:
+            conf_dates = conflict.get("dates") or f"{conflict.get('rental_details', {}).get('start_date')} to {conflict.get('rental_details', {}).get('end_date')}"
+            raise ValueError(f"Vehicle '{payload.vehicle.vehicle_name}' is already booked for an overlapping period ({conf_dates}). Please select another vehicle or different rental dates.")
         
         booking_id = f"BK-{int(time.time() * 1000) % 1000000:06d}"
         customer_id = payload.customer.customer_id or f"CU-{int(time.time() * 1000) % 100000:05d}"
@@ -172,118 +279,142 @@ class BookingService:
             "updated_at": now_str,
         }
         
-        # Save to Mongo if available, else save to memory store
+        # Save to Mongo with ACID transaction if available, else save to memory store
         db = self._get_db()
+        client = self._get_client()
 
-        # Mark vehicle as Rented upon booking creation
-        v_ident = payload.vehicle.vehicle_id or payload.vehicle.vehicle_name
-        if v_ident and db is not None:
-            try:
-                conds: list[dict[str, Any]] = [{"id": v_ident}, {"_id": v_ident}, {"makeModel": v_ident}, {"name": v_ident}]
-                try:
-                    if ObjectId.is_valid(v_ident):
-                        conds.append({"_id": ObjectId(v_ident)})
-                except Exception:
-                    pass
-                db["vehicles"].update_many(
-                    {"$or": conds},
-                    {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now_str}},
-                )
-            except Exception:
-                pass
-
-        # Save to Mongo if available, else save to memory store
         if db is not None:
             try:
-                db["bookings"].replace_one(
-                    {"id": booking_id},
-                    {**record, "_id": booking_id},
-                    upsert=True,
-                )
-            except Exception as exc:
-                logger.error("Failed to persist booking to Mongo: %s", exc)
+                with mongo_transaction(client) as session:
+                    # 1. Mark vehicle as Rented upon booking creation
+                    v_ident = payload.vehicle.vehicle_id or payload.vehicle.vehicle_name
+                    if v_ident:
+                        conds: list[dict[str, Any]] = [{"id": v_ident}, {"_id": v_ident}, {"makeModel": v_ident}, {"name": v_ident}]
+                        try:
+                            if ObjectId.is_valid(v_ident):
+                                conds.append({"_id": ObjectId(v_ident)})
+                        except Exception:
+                            pass
+                        db["vehicles"].update_many(
+                            {"$or": conds},
+                            {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now_str}},
+                            session=session,
+                        )
 
-            # Auto-sync or create customer in customers module collection
-            try:
-                phone_raw = payload.customer.phone.strip() if payload.customer.phone else ""
-                phone_norm = re.sub(r"\D", "", phone_raw)
-                c_name = payload.customer.name.strip()
-                c_email = (
-                    payload.customer.email.strip().lower()
-                    if payload.customer.email and payload.customer.email.strip()
-                    else None
-                )
+                    # 2. Persist booking document
+                    db["bookings"].replace_one(
+                        {"id": booking_id},
+                        {**record, "_id": booking_id},
+                        upsert=True,
+                        session=session,
+                    )
 
-                t_id_val = None
-                if tenant_id:
-                    t_id_val = ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id
+                    # 3. Auto-sync or create customer in customers module collection
+                    phone_raw = payload.customer.phone.strip() if payload.customer.phone else ""
+                    phone_norm = re.sub(r"\D", "", phone_raw)
+                    c_name = payload.customer.name.strip()
+                    c_email = (
+                        payload.customer.email.strip().lower()
+                        if payload.customer.email and payload.customer.email.strip()
+                        else None
+                    )
 
-                cust_query: dict[str, Any] = {}
-                if t_id_val is not None:
-                    cust_query["tenant_id"] = t_id_val
+                    t_id_val = None
+                    if tenant_id:
+                        t_id_val = ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id
 
-                conds: list[dict[str, Any]] = []
-                if payload.customer.customer_id:
-                    if ObjectId.is_valid(payload.customer.customer_id):
-                        conds.append({"_id": ObjectId(payload.customer.customer_id)})
+                    cust_query: dict[str, Any] = {}
+                    if t_id_val is not None:
+                        cust_query["tenant_id"] = t_id_val
+
+                    c_conds: list[dict[str, Any]] = []
+                    if payload.customer.customer_id:
+                        if ObjectId.is_valid(payload.customer.customer_id):
+                            c_conds.append({"_id": ObjectId(payload.customer.customer_id)})
+                        else:
+                            c_conds.append({"id": payload.customer.customer_id})
+                    if phone_norm:
+                        c_conds.append({"phone_normalized": phone_norm})
+                    if phone_raw:
+                        c_conds.append({"phone": phone_raw})
+                    if c_email:
+                        c_conds.append({"email": c_email})
+
+                    if c_conds:
+                        cust_query["$or"] = c_conds
                     else:
-                        conds.append({"id": payload.customer.customer_id})
-                if phone_norm:
-                    conds.append({"phone_normalized": phone_norm})
-                if phone_raw:
-                    conds.append({"phone": phone_raw})
-                if c_email:
-                    conds.append({"email": c_email})
+                        cust_query["name"] = c_name
 
-                if conds:
-                    cust_query["$or"] = conds
-                else:
-                    cust_query["name"] = c_name
-
-                now_utc = datetime.now(timezone.utc)
-                existing_cust = db["customers"].find_one(cust_query)
-                if existing_cust:
-                    update_ops: dict[str, Any] = {
-                        "$inc": {
+                    now_utc = datetime.now(timezone.utc)
+                    existing_cust = db["customers"].find_one(cust_query, session=session)
+                    if existing_cust:
+                        update_ops: dict[str, Any] = {
+                            "$inc": {
+                                "bookings": 1,
+                                "active": 1,
+                                "paid": float(initial_paid),
+                                "pending": float(pending_amount),
+                            },
+                            "$set": {
+                                "updated_at": now_utc,
+                                "aadhaar_number": aadhaar_number,
+                                "driving_licence_number": driving_licence_number,
+                            },
+                        }
+                        if c_email and not existing_cust.get("email"):
+                            update_ops["$set"]["email"] = c_email
+                        db["customers"].update_one({"_id": existing_cust["_id"]}, update_ops, session=session)
+                        customer_details["id"] = str(existing_cust["_id"])
+                        record["customer_details"]["id"] = str(existing_cust["_id"])
+                    else:
+                        new_cust: dict[str, Any] = {
+                            "name": c_name,
+                            "phone": phone_raw,
+                            "phone_normalized": phone_norm,
+                            "email": c_email,
+                            "aadhaar_number": aadhaar_number,
+                            "driving_licence_number": driving_licence_number,
+                            "status": "Verified",
                             "bookings": 1,
                             "active": 1,
                             "paid": float(initial_paid),
                             "pending": float(pending_amount),
-                        },
-                        "$set": {
+                            "created_at": now_utc,
                             "updated_at": now_utc,
-                            "aadhaar_number": aadhaar_number,
-                            "driving_licence_number": driving_licence_number,
-                        },
-                    }
-                    if c_email and not existing_cust.get("email"):
-                        update_ops["$set"]["email"] = c_email
-                    db["customers"].update_one({"_id": existing_cust["_id"]}, update_ops)
-                    customer_details["id"] = str(existing_cust["_id"])
-                    record["customer_details"]["id"] = str(existing_cust["_id"])
-                else:
-                    new_cust: dict[str, Any] = {
-                        "name": c_name,
-                        "phone": phone_raw,
-                        "phone_normalized": phone_norm,
-                        "email": c_email,
-                        "aadhaar_number": aadhaar_number,
-                        "driving_licence_number": driving_licence_number,
-                        "status": "Verified",
-                        "bookings": 1,
-                        "active": 1,
-                        "paid": float(initial_paid),
-                        "pending": float(pending_amount),
-                        "created_at": now_utc,
-                        "updated_at": now_utc,
-                    }
-                    if t_id_val is not None:
-                        new_cust["tenant_id"] = t_id_val
-                    ins_res = db["customers"].insert_one(new_cust)
-                    customer_details["id"] = str(ins_res.inserted_id)
-                    record["customer_details"]["id"] = str(ins_res.inserted_id)
-            except Exception as cust_err:
-                logger.warning("Could not auto-sync customer during offline booking: %s", cust_err)
+                        }
+                        if t_id_val is not None:
+                            new_cust["tenant_id"] = t_id_val
+                        ins_res = db["customers"].insert_one(new_cust, session=session)
+                        customer_details["id"] = str(ins_res.inserted_id)
+                        record["customer_details"]["id"] = str(ins_res.inserted_id)
+
+                    # 4. Insert initial payment record into payments collection atomically
+                    if initial_paid > 0 and payment_details.get("transactions"):
+                        first_tx = payment_details["transactions"][0]
+                        initial_tx_doc: dict[str, Any] = {
+                            "id": first_tx["id"],
+                            "_id": first_tx["id"],
+                            "booking": booking_id,
+                            "customer": payload.customer.name.strip(),
+                            "method": payload.payment.method,
+                            "date": now_str,
+                            "amount": float(initial_paid),
+                            "status": "Paid" if pending_amount == 0 else "Partial",
+                            "notes": f"Initial counter payment for booking {booking_id}",
+                            "tenant_id": str(tenant_id) if tenant_id else None,
+                            "vendor_id": str(tenant_id) if tenant_id else None,
+                            "created_at": now_str,
+                            "updated_at": now_str,
+                        }
+                        db["payments"].replace_one(
+                            {"id": first_tx["id"]},
+                            initial_tx_doc,
+                            upsert=True,
+                            session=session,
+                        )
+            except Exception as exc:
+                logger.error("Transaction failed during booking creation, rolled back: %s", exc)
+                raise
 
         try:
             from app.modules.notifications.service import create_notification
@@ -402,50 +533,107 @@ class BookingService:
         if payload.notes is not None:
             update_dict["notes"] = payload.notes
 
-        # Update in Mongo
+        # Update in Mongo with ACID transaction
         db = self._get_db()
+        client = self._get_client()
         if db is not None:
             try:
-                db["bookings"].update_one(
-                    {"$or": [{"id": booking_id}, {"_id": booking_id}]},
-                    {"$set": update_dict},
-                )
-            except Exception as exc:
-                logger.error("Failed to update booking in Mongo: %s", exc)
+                with mongo_transaction(client) as session:
+                    db["bookings"].update_one(
+                        {"$or": [{"id": booking_id}, {"_id": booking_id}]},
+                        {"$set": update_dict},
+                        session=session,
+                    )
 
-        # When booking completes (bike returned), vehicle goes to 'Under Review' for mechanic inspection
+                    # When booking completes (bike returned), vehicle goes to 'Under Review' for inspection
+                    if payload.status == "Completed":
+                        v_id = booking.vehicle_details.get("id") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "id", None)
+                        v_reg = booking.vehicle_details.get("registration") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "registration", None)
+                        v_ident = v_id or booking.vehicle
+                        if v_ident or v_reg:
+                            conds: list[dict[str, Any]] = []
+                            if v_ident:
+                                s_id = str(v_ident).strip()
+                                conds.extend([
+                                    {"id": s_id},
+                                    {"_id": s_id},
+                                    {"makeModel": s_id},
+                                    {"name": s_id},
+                                    {"registration": s_id},
+                                    {"registrationNumber": s_id},
+                                ])
+                                if ObjectId.is_valid(s_id):
+                                    conds.append({"_id": ObjectId(s_id)})
+                            if v_reg:
+                                s_reg = str(v_reg).strip()
+                                conds.extend([
+                                    {"registration": s_reg},
+                                    {"registrationNumber": s_reg},
+                                ])
+                            if conds:
+                                db["vehicles"].update_many(
+                                    {"$or": conds},
+                                    {"$set": {"fleetAvailability": "Under Review", "availability": "Under Review", "updatedAt": update_dict["updated_at"]}},
+                                    session=session,
+                                )
+
+                    # When booking is cancelled, vehicle goes back to 'Available'
+                    elif payload.status == "Cancelled":
+                        v_id = booking.vehicle_details.get("id") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "id", None)
+                        v_reg = booking.vehicle_details.get("registration") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "registration", None)
+                        v_ident = v_id or booking.vehicle
+                        if v_ident or v_reg:
+                            conds = []
+                            if v_ident:
+                                s_id = str(v_ident).strip()
+                                conds.extend([
+                                    {"id": s_id},
+                                    {"_id": s_id},
+                                    {"makeModel": s_id},
+                                    {"name": s_id},
+                                    {"registration": s_id},
+                                    {"registrationNumber": s_id},
+                                ])
+                                if ObjectId.is_valid(s_id):
+                                    conds.append({"_id": ObjectId(s_id)})
+                            if v_reg:
+                                s_reg = str(v_reg).strip()
+                                conds.extend([
+                                    {"registration": s_reg},
+                                    {"registrationNumber": s_reg},
+                                ])
+                            if conds:
+                                db["vehicles"].update_many(
+                                    {"$or": conds},
+                                    {"$set": {"fleetAvailability": "Available", "availability": "Available", "updatedAt": update_dict["updated_at"]}},
+                                    session=session,
+                                )
+
+                    # Update customer active count if booking ended
+                    if payload.status in ("Completed", "Cancelled"):
+                        c_id = (
+                            booking.customer_details.get("id")
+                            if isinstance(booking.customer_details, dict)
+                            else getattr(booking.customer_details, "id", None)
+                        ) if booking.customer_details else None
+                        c_cond: dict[str, Any] = {}
+                        if c_id and ObjectId.is_valid(c_id):
+                            c_cond["_id"] = ObjectId(c_id)
+                        elif booking.customer:
+                            c_cond["name"] = booking.customer
+                        if c_cond:
+                            db["customers"].update_one(
+                                c_cond,
+                                {
+                                    "$inc": {"active": -1},
+                                    "$set": {"updated_at": datetime.now(timezone.utc)},
+                                },
+                                session=session,
+                            )
+            except Exception as exc:
+                logger.error("Failed to update booking with transaction in Mongo: %s", exc)
+
         if payload.status == "Completed":
-            v_id = booking.vehicle_details.get("id") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "id", None)
-            v_reg = booking.vehicle_details.get("registration") if isinstance(booking.vehicle_details, dict) else getattr(booking.vehicle_details, "registration", None)
-            v_ident = v_id or booking.vehicle
-            if (v_ident or v_reg) and db is not None:
-                try:
-                    conds: list[dict[str, Any]] = []
-                    if v_ident:
-                        s_id = str(v_ident).strip()
-                        conds.extend([
-                            {"id": s_id},
-                            {"_id": s_id},
-                            {"makeModel": s_id},
-                            {"name": s_id},
-                            {"registration": s_id},
-                            {"registrationNumber": s_id},
-                        ])
-                        if ObjectId.is_valid(s_id):
-                            conds.append({"_id": ObjectId(s_id)})
-                    if v_reg:
-                        s_reg = str(v_reg).strip()
-                        conds.extend([
-                            {"registration": s_reg},
-                            {"registrationNumber": s_reg},
-                        ])
-                    if conds:
-                        db["vehicles"].update_many(
-                            {"$or": conds},
-                            {"$set": {"fleetAvailability": "Under Review", "availability": "Under Review", "updatedAt": update_dict["updated_at"]}},
-                        )
-                except Exception:
-                    pass
             try:
                 from app.modules.notifications.service import create_notification
                 b_tenant = tenant_id or getattr(booking, "tenant_id", None) or getattr(booking, "vendor_id", None)
@@ -458,30 +646,6 @@ class BookingService:
                     entity_type="booking",
                     tenant_id=str(b_tenant) if b_tenant else None,
                 )
-            except Exception:
-                pass
-
-        # Update customer active count if booking ended
-        if payload.status in ("Completed", "Cancelled") and db is not None:
-            try:
-                c_id = (
-                    booking.customer_details.get("id")
-                    if isinstance(booking.customer_details, dict)
-                    else getattr(booking.customer_details, "id", None)
-                ) if booking.customer_details else None
-                c_cond: dict[str, Any] = {}
-                if c_id and ObjectId.is_valid(c_id):
-                    c_cond["_id"] = ObjectId(c_id)
-                elif booking.customer:
-                    c_cond["name"] = booking.customer
-                if c_cond:
-                    db["customers"].update_one(
-                        c_cond,
-                        {
-                            "$inc": {"active": -1},
-                            "$set": {"updated_at": datetime.now(timezone.utc)},
-                        },
-                    )
             except Exception:
                 pass
         # Update in memory

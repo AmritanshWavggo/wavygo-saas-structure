@@ -185,8 +185,9 @@ class DocumentMetaSchema(BaseModel):
     url: str = Field(..., min_length=1, description="Cloudinary secure URL.")
     public_id: str = Field(..., alias="publicId", min_length=1)
     uploaded_at: Optional[datetime] = Field(default=None, alias="uploadedAt")
+    status: Optional[str] = Field(default="Verified", description="Document verification status")
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
 
 class DocumentsSchema(BaseModel):

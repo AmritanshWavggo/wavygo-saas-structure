@@ -121,3 +121,140 @@ def verify_signup_otp(email: str, otp: str) -> bool:
     logger.warning("Invalid or expired OTP attempt for %s", norm_email)
     return False
 
+
+def _normalize_target(target: str, channel: str) -> str:
+    if channel.lower() == "email":
+        return target.lower().strip()
+    import re
+    digits = re.sub(r"\D", "", target)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    return digits
+
+
+def store_customer_otp(target: str, channel: str, otp: str, ttl_seconds: int = 600) -> bool:
+    """Store OTP in Upstash Redis for customer email or phone verification."""
+    norm = _normalize_target(target, channel)
+    redis_key = f"otp:cust:{channel.lower()}:{norm}"
+    redis = get_redis_client()
+
+    if redis is not None:
+        try:
+            redis.setex(redis_key, ttl_seconds, otp)
+            logger.info("Stored customer %s OTP in Upstash Redis for %s (TTL: %ds)", channel, norm, ttl_seconds)
+        except Exception as exc:
+            logger.warning("Failed to store customer OTP in Redis: %s", exc)
+
+    _in_memory_otps[f"{channel.lower()}:{norm}"] = (otp, time.time() + ttl_seconds)
+    return True
+
+
+def verify_customer_otp(target: str, channel: str, otp: str) -> bool:
+    """Verify customer OTP against Upstash Redis or fallback store."""
+    norm = _normalize_target(target, channel)
+    redis_key = f"otp:cust:{channel.lower()}:{norm}"
+    redis = get_redis_client()
+    provided = str(otp).strip()
+
+    # 1. Redis
+    if redis is not None:
+        try:
+            stored = redis.get(redis_key)
+            if stored:
+                if isinstance(stored, bytes):
+                    stored = stored.decode("utf-8")
+                if secrets.compare_digest(str(stored).strip(), provided):
+                    redis.delete(redis_key)
+                    _in_memory_otps.pop(f"{channel.lower()}:{norm}", None)
+                    logger.info("Customer %s OTP verified successfully for %s", channel, norm)
+                    return True
+        except Exception as exc:
+            logger.warning("Redis customer OTP verification error: %s", exc)
+
+    # 2. Fallback
+    fallback_key = f"{channel.lower()}:{norm}"
+    fallback = _in_memory_otps.get(fallback_key)
+    if fallback is not None:
+        saved_code, expires_at = fallback
+        if time.time() <= expires_at and secrets.compare_digest(saved_code, provided):
+            _in_memory_otps.pop(fallback_key, None)
+            if redis is not None:
+                try:
+                    redis.delete(redis_key)
+                except Exception:
+                    pass
+            logger.info("Customer %s OTP verified via fallback for %s", channel, norm)
+            return True
+
+    return False
+
+
+def store_booking_otp(
+    phone_or_id: str, purpose: str, otp: str, ttl_seconds: int = 600
+) -> bool:
+    """Store booking OTP (pickup or return) in Upstash Redis."""
+    import re
+    digits = re.sub(r"\D", "", phone_or_id)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    clean = digits if len(digits) >= 10 else phone_or_id.strip().lower()
+    redis_key = f"otp:booking:{purpose.lower()}:{clean}"
+    redis = get_redis_client()
+
+    if redis is not None:
+        try:
+            redis.setex(redis_key, ttl_seconds, otp)
+            logger.info("Stored booking %s OTP in Upstash Redis for %s (TTL: %ds)", purpose, clean, ttl_seconds)
+        except Exception as exc:
+            logger.warning("Failed to store booking OTP in Redis: %s", exc)
+
+    _in_memory_otps[f"booking:{purpose.lower()}:{clean}"] = (otp, time.time() + ttl_seconds)
+    return True
+
+
+def verify_booking_otp(
+    phone_or_id: str, purpose: str, otp: str
+) -> bool:
+    """Verify booking OTP (pickup or return) against Upstash Redis."""
+    import re
+    digits = re.sub(r"\D", "", phone_or_id)
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    clean = digits if len(digits) >= 10 else phone_or_id.strip().lower()
+    redis_key = f"otp:booking:{purpose.lower()}:{clean}"
+    redis = get_redis_client()
+    provided = str(otp).strip()
+
+    # 1. Redis
+    if redis is not None:
+        try:
+            stored = redis.get(redis_key)
+            if stored:
+                if isinstance(stored, bytes):
+                    stored = stored.decode("utf-8")
+                if secrets.compare_digest(str(stored).strip(), provided):
+                    redis.delete(redis_key)
+                    _in_memory_otps.pop(f"booking:{purpose.lower()}:{clean}", None)
+                    logger.info("Booking %s OTP verified successfully for %s", purpose, clean)
+                    return True
+        except Exception as exc:
+            logger.warning("Redis booking OTP verification error: %s", exc)
+
+    # 2. Fallback
+    fallback_key = f"booking:{purpose.lower()}:{clean}"
+    fallback = _in_memory_otps.get(fallback_key)
+    if fallback is not None:
+        saved_code, expires_at = fallback
+        if time.time() <= expires_at and secrets.compare_digest(saved_code, provided):
+            _in_memory_otps.pop(fallback_key, None)
+            if redis is not None:
+                try:
+                    redis.delete(redis_key)
+                except Exception:
+                    pass
+            logger.info("Booking %s OTP verified via fallback for %s", purpose, clean)
+            return True
+
+    return False
+
+

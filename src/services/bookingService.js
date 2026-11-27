@@ -82,6 +82,28 @@ export const bookingService = {
       }),
     })
   },
+
+  /**
+   * Send booking OTP for pickup (rent) or return confirmation
+   * @param {Object} param0 { phone, purpose, booking_id, vehicle_name, customer_name }
+   */
+  async sendBookingOtp({ phone, purpose = 'pickup', booking_id, vehicle_name, customer_name }) {
+    return apiFetch('/bookings/offline/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, purpose, booking_id, vehicle_name, customer_name }),
+    })
+  },
+
+  /**
+   * Verify booking OTP for pickup or return confirmation
+   * @param {Object} param0 { phone, purpose, otp, booking_id }
+   */
+  async verifyBookingOtp({ phone, purpose = 'pickup', otp, booking_id }) {
+    return apiFetch('/bookings/offline/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ phone, purpose, otp, booking_id }),
+    })
+  },
 }
 
 export default bookingService

@@ -11,7 +11,7 @@ from bson import ObjectId
 from fastapi import HTTPException, status
 from pymongo.errors import DuplicateKeyError, PyMongoError
 
-from app.db.mongodb import get_database
+from app.db.mongodb import create_mongo_client, get_database, mongo_transaction
 from app.modules.payments.schemas import PaymentCreate, PaymentUpdate, PaymentResponse, PaymentStatsResponse
 
 logger = logging.getLogger(__name__)
@@ -34,6 +34,12 @@ class PaymentService:
     def _get_db(self):
         try:
             return get_database()
+        except Exception:
+            return None
+
+    def _get_client(self):
+        try:
+            return create_mongo_client()
         except Exception:
             return None
 
@@ -268,125 +274,110 @@ class PaymentService:
             ]
         }
 
-        updated_booking = db["bookings"].find_one_and_update(
-            conditional_filter,
-            {
-                "$inc": {
-                    "paid": payment_amount_inr,
-                    "pending": -payment_amount_inr,
-                },
-                "$set": {"updated_at": now_str},
-                "$push": {"payment_details.transactions": tx_entry},
-            },
-            return_document=True,
-        )
-
-        if not updated_booking:
-            # Check why conditional update failed
-            fresh_booking = db["bookings"].find_one(b_filter)
-            if not fresh_booking:
-                raise HTTPException(status_code=404, detail="Booking not found.")
-            if fresh_booking.get("status") == "Cancelled":
-                raise HTTPException(status_code=409, detail="Cannot record payment for a cancelled booking.")
-            fresh_paid = fresh_booking.get("paid", 0.0)
-            fresh_total = fresh_booking.get("total_amount", 0.0)
-            fresh_outstanding = max(0.0, fresh_total - fresh_paid)
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Payment rejected: amount of ₹{payload.amount:.2f} exceeds outstanding balance of ₹{fresh_outstanding:.2f}.",
-            )
-
-        # Build payment document
-        payment_record: Dict[str, Any] = {
-            "id": tx_id,
-            "_id": tx_id,
-            "booking": payload.booking_id.strip(),
-            "customer": customer_name.strip(),
-            "method": payload.method.strip(),
-            "date": date_formatted,
-            "amount": payment_amount_inr,
-            "status": "Paid" if inr_to_paise(updated_booking.get("pending", 0.0)) == 0 else "Partial",
-            "notes": payload.notes.strip() if payload.notes else None,
-            "transaction_reference": payload.transaction_reference.strip() if payload.transaction_reference else None,
-            "idempotency_key": idemp_key,
-            "payment_date": payload.payment_date,
-            "tenant_id": tenant_id_str,
-            "vendor_id": tenant_id_str,
-            "created_at": now_str,
-            "updated_at": now_str,
-        }
-
         try:
-            db["payments"].insert_one(payment_record)
-        except DuplicateKeyError as exc:
-            # Compensation: rollback booking update immediately
-            db["bookings"].update_one(
-                {"_id": updated_booking["_id"]},
-                {
-                    "$inc": {"paid": -payment_amount_inr, "pending": payment_amount_inr},
-                    "$set": {"updated_at": now_str},
-                    "$pull": {"payment_details.transactions": {"id": tx_id}},
-                },
-            )
-            logger.warning("Duplicate key during payment insert: %s", exc)
-            # Check if idempotency key collided concurrently
-            existing_collision = db["payments"].find_one({
-                "$and": [
-                    {"$or": [{"tenant_id": tenant_id_str}, {"vendor_id": tenant_id_str}]},
-                    {"idempotency_key": idemp_key},
-                ]
-            })
-            if existing_collision:
-                existing_collision.pop("_id", None)
-                return PaymentResponse(**existing_collision), True
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Transaction reference or idempotency key collision.",
-            )
+            with mongo_transaction(self._get_client()) as session:
+                updated_booking = db["bookings"].find_one_and_update(
+                    conditional_filter,
+                    {
+                        "$inc": {
+                            "paid": payment_amount_inr,
+                            "pending": -payment_amount_inr,
+                        },
+                        "$set": {"updated_at": now_str},
+                        "$push": {"payment_details.transactions": tx_entry},
+                    },
+                    return_document=True,
+                    session=session,
+                )
+
+                if not updated_booking:
+                    # Check why conditional update failed
+                    fresh_booking = db["bookings"].find_one(b_filter)
+                    if not fresh_booking:
+                        raise HTTPException(status_code=404, detail="Booking not found.")
+                    if fresh_booking.get("status") == "Cancelled":
+                        raise HTTPException(status_code=409, detail="Cannot record payment for a cancelled booking.")
+                    fresh_paid = fresh_booking.get("paid", 0.0)
+                    fresh_total = fresh_booking.get("total_amount", 0.0)
+                    fresh_outstanding = max(0.0, fresh_total - fresh_paid)
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=f"Payment rejected: amount of ₹{payload.amount:.2f} exceeds outstanding balance of ₹{fresh_outstanding:.2f}.",
+                    )
+
+                # Build payment document
+                payment_record: Dict[str, Any] = {
+                    "id": tx_id,
+                    "_id": tx_id,
+                    "booking": payload.booking_id.strip(),
+                    "customer": customer_name.strip(),
+                    "method": payload.method.strip(),
+                    "date": date_formatted,
+                    "amount": payment_amount_inr,
+                    "status": "Paid" if inr_to_paise(updated_booking.get("pending", 0.0)) == 0 else "Partial",
+                    "notes": payload.notes.strip() if payload.notes else None,
+                    "transaction_reference": payload.transaction_reference.strip() if payload.transaction_reference else None,
+                    "idempotency_key": idemp_key,
+                    "payment_date": payload.payment_date,
+                    "tenant_id": tenant_id_str,
+                    "vendor_id": tenant_id_str,
+                    "created_at": now_str,
+                    "updated_at": now_str,
+                }
+
+                try:
+                    db["payments"].insert_one(payment_record, session=session)
+                except DuplicateKeyError as exc:
+                    logger.warning("Duplicate key during payment insert: %s", exc)
+                    # Check if idempotency key collided concurrently
+                    existing_collision = db["payments"].find_one({
+                        "$and": [
+                            {"$or": [{"tenant_id": tenant_id_str}, {"vendor_id": tenant_id_str}]},
+                            {"idempotency_key": idemp_key},
+                        ]
+                    })
+                    if existing_collision:
+                        existing_collision.pop("_id", None)
+                        return PaymentResponse(**existing_collision), True
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Transaction reference or idempotency key collision.",
+                    )
+
+                # Safely update customer paid / pending counters inside the transaction
+                c_id = (
+                    booking.get("customer_details", {}).get("id")
+                    if isinstance(booking.get("customer_details"), dict)
+                    else None
+                )
+                c_cond: dict[str, Any] = {}
+                if c_id and ObjectId.is_valid(c_id):
+                    c_cond = {"_id": ObjectId(c_id)}
+                elif booking.get("customer"):
+                    c_cond = {
+                        "name": booking.get("customer"),
+                        "$or": [
+                            {"tenant_id": tenant_id_str},
+                            {"tenant_id": ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id_str},
+                        ],
+                    }
+                if c_cond:
+                    db["customers"].update_one(
+                        c_cond,
+                        {
+                            "$inc": {"paid": float(payload.amount), "pending": -float(payload.amount)},
+                            "$set": {"updated_at": datetime.now(timezone.utc)},
+                        },
+                        session=session,
+                    )
+        except HTTPException:
+            raise
         except PyMongoError as exc:
-            # Compensation: rollback booking update
-            db["bookings"].update_one(
-                {"_id": updated_booking["_id"]},
-                {
-                    "$inc": {"paid": -payment_amount_inr, "pending": payment_amount_inr},
-                    "$set": {"updated_at": now_str},
-                    "$pull": {"payment_details.transactions": {"id": tx_id}},
-                },
-            )
             logger.error("Failed to insert payment record: %s", exc)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Failed to record payment in database.",
             )
-
-        # 8. Safely Update Customer Paid / Pending Counters Once
-        try:
-            c_id = (
-                booking.get("customer_details", {}).get("id")
-                if isinstance(booking.get("customer_details"), dict)
-                else None
-            )
-            c_cond: dict[str, Any] = {}
-            if c_id and ObjectId.is_valid(c_id):
-                c_cond = {"_id": ObjectId(c_id)}
-            elif booking.get("customer"):
-                c_cond = {
-                    "name": booking.get("customer"),
-                    "$or": [
-                        {"tenant_id": tenant_id_str},
-                        {"tenant_id": ObjectId(tenant_id) if ObjectId.is_valid(tenant_id) else tenant_id_str},
-                    ],
-                }
-            if c_cond:
-                db["customers"].update_one(
-                    c_cond,
-                    {
-                        "$inc": {"paid": float(payload.amount), "pending": -float(payload.amount)},
-                        "$set": {"updated_at": datetime.now(timezone.utc)},
-                    },
-                )
-        except Exception as exc:
-            logger.debug("Non-fatal customer counter sync: %s", exc)
 
         # 9. Create Notification
         try:

@@ -269,13 +269,17 @@ def login(
         )
 
     # Check previous session and device
-    previous_session = db["security_sessions"].find_one({
-        "vendor_id": vendor["_id"],
-    })
+    previous_session = (
+        db["security_sessions"].find_one({"vendor_id": vendor["_id"]})
+        if db is not None
+        else None
+    )
 
-    prefs = db["security_settings"].find_one({
-        "vendor_id": vendor["_id"],
-    }) or {}
+    prefs = (
+        db["security_settings"].find_one({"vendor_id": vendor["_id"]}) or {}
+        if db is not None
+        else {}
+    )
 
     current_ip = (
         request.client.host
@@ -288,7 +292,7 @@ def login(
     )[:500]
 
     # Detect new device or network
-    if previous_session and prefs.get("new_device_alerts", True):
+    if db is not None and previous_session and prefs.get("new_device_alerts", True):
         if (
             previous_session.get("ip_address") != current_ip
             or previous_session.get("user_agent") != current_agent
@@ -310,32 +314,33 @@ def login(
         minutes=settings.jwt_access_token_minutes,
     )
 
-    db["security_sessions"].insert_one({
-        "_id": session_id,
-        "vendor_id": vendor["_id"],
-        "ip_address": current_ip,
-        "user_agent": current_agent,
-        "created_at": now,
-        "last_seen_at": now,
-        "expires_at": expires_at,
-        "revoked_at": None,
-    })
+    if db is not None:
+        db["security_sessions"].insert_one({
+            "_id": session_id,
+            "vendor_id": vendor["_id"],
+            "ip_address": current_ip,
+            "user_agent": current_agent,
+            "created_at": now,
+            "last_seen_at": now,
+            "expires_at": expires_at,
+            "revoked_at": None,
+        })
 
-    # Save successful login history
-    db["security_login_history"].insert_one({
-        "vendor_id": vendor["_id"],
-        "email": credentials.email,
-        "success": True,
-        "ip_address": current_ip,
-        "user_agent": current_agent,
-        "created_at": now
-    })
+        # Save successful login history
+        db["security_login_history"].insert_one({
+            "vendor_id": vendor["_id"],
+            "email": credentials.email,
+            "success": True,
+            "ip_address": current_ip,
+            "user_agent": current_agent,
+            "created_at": now,
+        })
 
     # Clear failed login attempts after successful login
-    attempts.delete_many({
-        "key": attempt_key
-        "created_at": now,
-    })
+    if attempts is not None:
+        attempts.delete_many({
+            "key": attempt_key,
+        })
 
     # Generate access token
     token, expires_in = create_access_token(

@@ -5,6 +5,8 @@ import {
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useDemoData } from '../../data/DemoDataContext.jsx'
+import { authService } from '../../services/authService.js'
+import { tenantService } from '../../services/tenantService.js'
 
 const destinations = [
   { label: 'Dashboard', to: '/app/dashboard' },
@@ -32,13 +34,26 @@ function Topbar({ onOpenMobileSidebar }) {
   const [menu, setMenu] = useState('')
   const [query, setQuery] = useState('')
   const [profile, setProfile] = useState(null)
+  const [vendor, setVendor] = useState('WavyGo Mobility')
+  const [notificationsRead, setNotificationsRead] = useState(false)
   const headerRef = useRef(null)
   const navigate = useNavigate()
-  const { currentDemoUser, currentDemoRole, setCurrentDemoRole } = useDemoData()
+  const demoData = useDemoData() || {}
+  const {
+    currentDemoUser = { name: 'Demo Admin', role: 'Admin' },
+    currentDemoRole = 'Admin',
+    setCurrentDemoRole = () => {},
+  } = demoData
   const matches = useMemo(
     () => destinations.filter((item) => item.label.toLowerCase().includes(query.toLowerCase())),
     [query],
   )
+
+  function goToSearchResult(item) {
+    setMenu('')
+    setQuery('')
+    navigate(item.to)
+  }
 
   useEffect(() => {
     function handlePointerDown(event) {

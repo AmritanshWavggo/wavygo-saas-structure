@@ -233,6 +233,19 @@ def get_current_vendor(
     ):
         raise unauthorized()
 
+    # Demo / Dev token bypass
+    raw_token = credentials.credentials
+    if raw_token in ("wavygo-demo-access", "demo-token", "dev-token") or raw_token.startswith("demo-"):
+        return {
+            "_id": ObjectId("670000000000000000000001"),
+            "business_name": "WavyGo Demo Fleets",
+            "owner_name": "Demo Admin",
+            "email": "demo@wavygo.com",
+            "phone": "+91 98765 43210",
+            "role": "owner",
+            "is_active": True,
+        }
+
     # 2. Decode and validate JWT
     try:
         claims = jwt.decode(

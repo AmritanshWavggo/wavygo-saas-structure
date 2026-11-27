@@ -265,20 +265,26 @@ export function Modal({ title, children, onClose, footer }) {
 
 export function Field({ label, error, className = '', ...props }) {
   const id = props.id || props.name
+  const safeProps = {
+    ...props,
+    ...(props.value !== undefined ? { value: props.value ?? '' } : {}),
+  }
   return (
     <label htmlFor={id} className={`block ${className}`}>
-      <span className="mb-1.5 block text-xs font-medium text-slate-600">
-        {label}{props.required && <span className="ml-0.5 text-rose-500">*</span>}
-      </span>
+      {label && (
+        <span className="mb-1.5 block text-xs font-medium text-slate-600">
+          {label}{props.required && <span className="ml-0.5 text-rose-500">*</span>}
+        </span>
+      )}
       {props.as === 'textarea' ? (
         <textarea
-          {...props}
+          {...safeProps}
           id={id}
           className="min-h-24 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
         />
       ) : (
         <input
-          {...props}
+          {...safeProps}
           id={id}
           className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
         />

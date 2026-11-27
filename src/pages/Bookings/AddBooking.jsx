@@ -4,16 +4,20 @@ import { useDemoData } from '../../data/DemoDataContext.jsx'
 import { bookingService } from '../../services/bookingService.js'
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   BadgeCheck,
+  Calendar,
   Check,
   CheckCircle2,
   CircleHelp,
+  Clock,
   CreditCard,
   FileText,
   Loader2,
   MapPin,
+  Phone,
   RefreshCw,
   Server,
   ShieldCheck,
@@ -53,11 +57,30 @@ function VehicleCardImage({ vehicle, className }) {
   )
 }
 
+function BookingField({ label, name, value, onChange, error, placeholder, type = 'text', required = false, ...props }) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-sm font-semibold text-slate-700">
+        {label}{required && <span className="ml-1 text-rose-500">*</span>}
+      </span>
+      <input
+        type={type}
+        value={value ?? ''}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        {...props}
+        className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${error ? 'border-rose-300' : 'border-slate-200'}`}
+      />
+      {error && <span className="mt-1 block text-xs text-rose-600">{error}</span>}
+    </label>
+  )
+}
+
 function AddBooking() {
   const navigate = useNavigate()
   const location = useLocation()
   const offlineMode = Boolean(location.state?.offline)
-  const { vehicles, customers, addRecord, syncOfflineBookings, syncVehicles, syncCustomers } = useDemoData()
+  const { vehicles, customers, bookings, addRecord, syncOfflineBookings, syncVehicles, syncCustomers, bookingInterval, intervalsOverlap } = useDemoData()
   const today = formatDate(new Date())
   const tomorrow = formatDate(new Date(Date.now() + 86_400_000))
 
@@ -87,12 +110,66 @@ function AddBooking() {
   const [apiError, setApiError] = useState(null)
   const [backendStatus, setBackendStatus] = useState({ checked: false, online: false })
 
+  const [pickupOtp, setPickupOtp] = useState('')
+  const [pickupOtpSent, setPickupOtpSent] = useState(false)
+  const [pickupSending, setPickupSending] = useState(false)
+  const [pickupVerifying, setPickupVerifying] = useState(false)
+  const [pickupOtpVerified, setPickupOtpVerified] = useState(false)
+  const [pickupOtpMsg, setPickupOtpMsg] = useState({ type: '', text: '' })
+
+  async function handleSendPickupOtp() {
+    const phone = activeCustomer.phone?.trim()
+    if (!phone || phone.length < 8) {
+      setPickupOtpMsg({ type: 'error', text: 'Customer phone number is missing or invalid.' })
+      return
+    }
+    setPickupSending(true)
+    setPickupOtpMsg({ type: '', text: '' })
+    try {
+      await bookingService.sendBookingOtp({
+        phone,
+        purpose: 'pickup',
+        customer_name: activeCustomer.name,
+        vehicle_name: selectedVehicle?.name,
+      })
+      setPickupOtpSent(true)
+      setPickupOtpMsg({ type: 'success', text: `SMS OTP sent to ${phone} for bike handover confirmation.` })
+    } catch (err) {
+      setPickupOtpMsg({ type: 'error', text: err?.message || 'Failed to send OTP.' })
+    } finally {
+      setPickupSending(false)
+    }
+  }
+
+  async function handleVerifyPickupOtp() {
+    if (!pickupOtp || pickupOtp.trim().length < 4) {
+      setPickupOtpMsg({ type: 'error', text: 'Please enter the 6-digit OTP code.' })
+      return
+    }
+    setPickupVerifying(true)
+    setPickupOtpMsg({ type: '', text: '' })
+    try {
+      await bookingService.verifyBookingOtp({
+        phone: activeCustomer.phone?.trim(),
+        purpose: 'pickup',
+        otp: pickupOtp.trim(),
+      })
+      setPickupOtpVerified(true)
+      setPickupOtpMsg({ type: 'success', text: 'Rental handover OTP verified successfully! ✓' })
+    } catch (err) {
+      setPickupOtpMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP code.' })
+    } finally {
+      setPickupVerifying(false)
+    }
+  }
+
   const selectedVehicle = vehicles.find((vehicle) => vehicle.id === selectedVehicleId)
   const selectedCustomerRecord = customers.find((item) => item.id === selectedCustomerId)
   const selectedCustomer = selectedCustomerRecord?.name || ''
   const activeCustomer = customerMode === 'existing' && selectedCustomerRecord ? selectedCustomerRecord : customer
 
   const rentalDays = getRentalDays(rental.startDate, rental.endDate)
+  const minRequiredDays = Math.max(1, Number(selectedVehicle?.minimumDays || selectedVehicle?.minimum_days || 1))
   const dailyPrice = Number(selectedVehicle?.price || 0)
   const baseAmount = roundMoney(dailyPrice * rentalDays)
   const addOnAmount = rental.addOns ? roundMoney(500 * rentalDays) : 0
@@ -103,6 +180,57 @@ function AddBooking() {
   const totalAmount = roundMoney(subtotal - discountAmount + depositAmount)
   const initialPaid = roundMoney(Math.min(totalAmount, Math.max(0, Number(payment.paidAmount) || 0)))
   const pendingAmount = roundMoney(Math.max(0, totalAmount - initialPaid))
+
+  const selectedStartMs = new Date(`${rental.startDate}T${rental.pickupTime || '10:00'}`).getTime()
+  const selectedEndMs = new Date(`${rental.endDate}T${rental.returnTime || '10:00'}`).getTime()
+
+  // Filter vehicles: hide any vehicle that is offline, in maintenance, or has an overlapping active booking
+  const availableVehicles = (vehicles || []).filter((vehicle) => {
+    if (vehicle.status === 'Offline' || vehicle.availability === 'Maintenance') {
+      return false
+    }
+
+    if (Number.isFinite(selectedStartMs) && Number.isFinite(selectedEndMs) && selectedStartMs < selectedEndMs) {
+      const hasConflict = (bookings || []).some((b) => {
+        if (['Cancelled', 'Completed'].includes(b.status)) return false
+
+        const linkedId = b.vehicle_details?.id || b.vehicleId || b.vehicle_id || vehicles.find((item) => item.name === b.vehicle)?.id
+        const linkedName = b.vehicle_details?.name || b.vehicle
+
+        const isSame = linkedId ? linkedId === vehicle.id : linkedName === vehicle.name
+        if (!isSame) return false
+
+        const [bStart, bEnd] = typeof bookingInterval === 'function' ? bookingInterval(b) : [NaN, NaN]
+        if (!Number.isFinite(bStart) || !Number.isFinite(bEnd)) return false
+
+        return typeof intervalsOverlap === 'function'
+          ? intervalsOverlap(selectedStartMs, selectedEndMs, bStart, bEnd)
+          : (selectedStartMs < bEnd && bStart < selectedEndMs)
+      })
+
+      if (hasConflict) return false
+    }
+
+    return true
+  })
+
+  function handleSelectVehicle(vehicle) {
+    setSelectedVehicleId(vehicle.id)
+    setErrors((current) => ({ ...current, vehicle: '' }))
+
+    // Enforce vehicle's minimum rental days by automatically extending return date if needed
+    const minDays = Math.max(1, Number(vehicle.minimumDays || vehicle.minimum_days || 1))
+    const currentDays = getRentalDays(rental.startDate, rental.endDate)
+    if (currentDays < minDays) {
+      const [sy, sm, sd] = rental.startDate.split('-').map(Number)
+      const startUtc = Date.UTC(sy, sm - 1, sd)
+      const newEnd = new Date(startUtc + minDays * 86_400_000)
+      setRental((curr) => ({
+        ...curr,
+        endDate: formatDate(newEnd),
+      }))
+    }
+  }
 
   useEffect(() => {
     checkHealth()
@@ -128,7 +256,13 @@ function AddBooking() {
 
   function validate() {
     const nextErrors = {}
-    if (step === 0 && !selectedVehicleId) nextErrors.vehicle = 'Select a vehicle to continue.'
+    if (step === 0) {
+      if (!selectedVehicleId) {
+        nextErrors.vehicle = 'Select a vehicle to continue.'
+      } else if (!availableVehicles.some((v) => v.id === selectedVehicleId)) {
+        nextErrors.vehicle = 'The selected vehicle is no longer available for the chosen dates and times.'
+      }
+    }
     if (step === 1) {
       if (customerMode === 'existing' && !selectedCustomerId) nextErrors.selectedCustomer = 'Choose a customer or add a new one.'
       if (!customer.aadhaar.trim()) {
@@ -145,7 +279,30 @@ function AddBooking() {
     if (step === 2) {
       if (!rental.startDate) nextErrors.startDate = 'Select a pickup date.'
       if (!rental.endDate) nextErrors.endDate = 'Select a return date.'
-      if (rental.startDate && rental.endDate && rental.endDate <= rental.startDate) nextErrors.endDate = 'Return must be after pickup.'
+      if (rental.startDate && rental.endDate && rental.endDate <= rental.startDate) {
+        nextErrors.endDate = 'Return must be after pickup.'
+      }
+      if (selectedVehicle) {
+        const minDays = Math.max(1, Number(selectedVehicle.minimumDays || selectedVehicle.minimum_days || 1))
+        if (rentalDays < minDays) {
+          nextErrors.endDate = `${selectedVehicle.name} requires a minimum rental period of ${minDays} days (currently: ${rentalDays} ${rentalDays === 1 ? 'day' : 'days'}).`
+        }
+
+        const startMs = new Date(`${rental.startDate}T${rental.pickupTime || '10:00'}`).getTime()
+        const endMs = new Date(`${rental.endDate}T${rental.returnTime || '10:00'}`).getTime()
+        const hasOverlap = (bookings || []).some((b) => {
+          if (['Cancelled', 'Completed'].includes(b.status)) return false
+          const linkedId = b.vehicle_details?.id || b.vehicleId || b.vehicle_id || vehicles.find((item) => item.name === b.vehicle)?.id
+          const linkedName = b.vehicle_details?.name || b.vehicle
+          const isSame = linkedId ? linkedId === selectedVehicle.id : linkedName === selectedVehicle.name
+          if (!isSame) return false
+          const [bStart, bEnd] = typeof bookingInterval === 'function' ? bookingInterval(b) : [NaN, NaN]
+          return Number.isFinite(bStart) && Number.isFinite(bEnd) && (typeof intervalsOverlap === 'function' ? intervalsOverlap(startMs, endMs, bStart, bEnd) : (startMs < bEnd && bStart < endMs))
+        })
+        if (hasOverlap) {
+          nextErrors.endDate = `Vehicle "${selectedVehicle.name}" is already booked for these dates/times. Please select another date or vehicle.`
+        }
+      }
       if (!rental.pickupLocation.trim()) nextErrors.pickupLocation = 'Add a pickup location.'
     }
     setErrors(nextErrors)
@@ -158,6 +315,14 @@ function AddBooking() {
   }
 
   async function makeBooking(forceLocal = false) {
+    if (!pickupOtpVerified) {
+      setPickupOtpMsg({
+        type: 'error',
+        text: 'Bike handover confirm karne ke liye customer ke mobile number par OTP bhej kar verify karein.',
+      })
+      return
+    }
+
     const customerName = activeCustomer.name.trim()
     const dates = `${new Date(`${rental.startDate}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(`${rental.endDate}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`
 
@@ -305,14 +470,6 @@ function AddBooking() {
     })
   }
 
-  const Field = ({ label, name, value, onChange, error, placeholder, type = 'text', required = false, ...props }) => (
-    <label className="block">
-      <span className="mb-1.5 block text-sm font-semibold text-slate-700">{label}{required && <span className="ml-1 text-rose-500">*</span>}</span>
-      <input type={type} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} {...props} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${error ? 'border-rose-300' : 'border-slate-200'}`} />
-      {error && <span className="mt-1 block text-xs text-rose-600">{error}</span>}
-    </label>
-  )
-
   if (confirmation) {
     return (
       <section className="mx-auto max-w-2xl pb-10 text-slate-800">
@@ -440,38 +597,136 @@ function AddBooking() {
           </div>
 
           {step === 0 && (
-            <div className="space-y-4">
+            <div className="space-y-5">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">Select a vehicle</h2>
-                <p className="mt-1 text-sm text-slate-500">Choose which vehicle the walk-in customer is renting.</p>
+                <h2 className="text-lg font-semibold text-slate-900">Select a vehicle & rental schedule</h2>
+                <p className="mt-1 text-sm text-slate-500">Choose rental dates and pick an available vehicle. Booked vehicles for this timeframe are hidden automatically.</p>
               </div>
+
+              {/* Rental Schedule Bar */}
+              <div className="rounded-2xl border border-emerald-100 bg-emerald-50/50 p-4 space-y-3">
+                <div className="flex items-center gap-2 text-xs font-semibold text-emerald-900">
+                  <Calendar size={15} className="text-emerald-700" />
+                  <span>Rental Schedule (Pickup & Return)</span>
+                  <span className="ml-auto rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-bold text-emerald-800">
+                    {rentalDays} {rentalDays === 1 ? 'day' : 'days'}
+                  </span>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-4">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Pickup Date</label>
+                    <input
+                      type="date"
+                      min={today}
+                      value={rental.startDate}
+                      onChange={(e) => updateRental('startDate', e.target.value)}
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Pickup Time</label>
+                    <input
+                      type="time"
+                      value={rental.pickupTime}
+                      onChange={(e) => updateRental('pickupTime', e.target.value)}
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Return Date</label>
+                    <input
+                      type="date"
+                      min={rental.startDate || today}
+                      value={rental.endDate}
+                      onChange={(e) => updateRental('endDate', e.target.value)}
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Return Time</label>
+                    <input
+                      type="time"
+                      value={rental.returnTime}
+                      onChange={(e) => updateRental('returnTime', e.target.value)}
+                      className="h-9 w-full rounded-xl border border-slate-200 bg-white px-2.5 text-xs text-slate-800 outline-none focus:border-emerald-500"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-emerald-100 pt-2 text-[11px] text-emerald-800">
+                  <span>
+                    Showing <strong className="font-semibold text-emerald-950">{availableVehicles.length}</strong> available vehicles for this window.
+                  </span>
+                  <span className="text-emerald-700 font-medium">
+                    ✓ Overlapping booked vehicles are excluded
+                  </span>
+                </div>
+              </div>
+
               {errors.vehicle && <p className="rounded-lg bg-rose-50 px-3 py-2 text-xs text-rose-700">{errors.vehicle}</p>}
-              <div className="grid gap-3 sm:grid-cols-2">
-                {vehicles.map((vehicle) => (
-                  <button
-                    type="button"
-                    key={vehicle.id}
-                    onClick={() => { setSelectedVehicleId(vehicle.id); setErrors((current) => ({ ...current, vehicle: '' })) }}
-                    className={`relative rounded-2xl border p-4 text-left transition ${selectedVehicleId === vehicle.id ? 'border-emerald-500 bg-emerald-50/50 ring-3 ring-emerald-100' : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'}`}
-                  >
-                    <span className="absolute right-3 top-3 grid size-5 place-items-center rounded-full border border-slate-200 bg-white">
-                      {selectedVehicleId === vehicle.id && <span className="size-2.5 rounded-full bg-emerald-700" />}
-                    </span>
-                    <div className="flex items-center gap-3">
-                      <VehicleCardImage vehicle={vehicle} className="size-12 rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl" />
-                      <div className="min-w-0">
-                        <p className="truncate pr-5 text-sm font-semibold text-slate-900">{vehicle.name}</p>
-                        <p className="mt-1 truncate text-xs text-slate-500">{vehicle.registration || vehicle.id}</p>
-                      </div>
-                    </div>
-                    <div className="mt-4 flex items-end justify-between border-t border-slate-100 pt-3">
-                      <span className="text-xs text-slate-500">{vehicle.type} · {vehicle.availability || 'Available'}</span>
-                      <span className="text-sm font-semibold text-slate-900">₹{Number(vehicle.price).toLocaleString('en-IN')}<span className="font-normal text-slate-400"> / day</span></span>
-                    </div>
-                    <span className={`absolute bottom-[3.25rem] right-4 rounded-full px-2 py-0.5 text-[10px] font-semibold ${vehicle.status === 'Online' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-500'}`}>{vehicle.status}</span>
-                  </button>
-                ))}
-              </div>
+
+              {availableVehicles.length === 0 ? (
+                <div className="rounded-2xl border border-dashed border-amber-300 bg-amber-50/60 p-8 text-center space-y-3">
+                  <div className="mx-auto grid size-12 place-items-center rounded-full bg-amber-100 text-amber-700">
+                    <AlertTriangle size={24} />
+                  </div>
+                  <h3 className="text-base font-semibold text-slate-900">No vehicles available for these dates</h3>
+                  <p className="mx-auto max-w-md text-xs leading-relaxed text-slate-600">
+                    All vehicles in your fleet are either already booked for this time interval ({rental.startDate} {rental.pickupTime} – {rental.endDate} {rental.returnTime}) or currently set to Offline / Maintenance.
+                  </p>
+                  <p className="text-xs font-semibold text-amber-800">
+                    Please adjust the pickup or return dates and times above to see available fleet units.
+                  </p>
+                </div>
+              ) : (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {availableVehicles.map((vehicle) => {
+                    const minDays = Math.max(1, Number(vehicle.minimumDays || vehicle.minimum_days || 1))
+                    const minPackageAmt = Number(vehicle.price) * minDays
+
+                    return (
+                      <button
+                        type="button"
+                        key={vehicle.id}
+                        onClick={() => handleSelectVehicle(vehicle)}
+                        className={`relative rounded-2xl border p-4 text-left transition ${selectedVehicleId === vehicle.id ? 'border-emerald-500 bg-emerald-50/50 ring-3 ring-emerald-100' : 'border-slate-200 hover:border-emerald-200 hover:bg-emerald-50/20'}`}
+                      >
+                        <span className="absolute right-3 top-3 grid size-5 place-items-center rounded-full border border-slate-200 bg-white">
+                          {selectedVehicleId === vehicle.id && <span className="size-2.5 rounded-full bg-emerald-700" />}
+                        </span>
+                        <div className="flex items-center gap-3">
+                          <VehicleCardImage vehicle={vehicle} className="size-12 rounded-xl bg-gradient-to-br from-emerald-50 to-green-100 text-2xl" />
+                          <div className="min-w-0">
+                            <p className="truncate pr-5 text-sm font-semibold text-slate-900">{vehicle.name}</p>
+                            <p className="mt-1 truncate text-xs text-slate-500">{vehicle.registration || vehicle.id}</p>
+                          </div>
+                        </div>
+
+                        <div className="mt-3 flex items-center gap-2">
+                          <span className="rounded-md bg-emerald-100/80 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                            Min rental: {minDays} {minDays === 1 ? 'day' : 'days'}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            (Min: ₹{minPackageAmt.toLocaleString('en-IN')})
+                          </span>
+                        </div>
+
+                        <div className="mt-3 flex items-end justify-between border-t border-slate-100 pt-3">
+                          <span className="text-xs text-slate-500">{vehicle.type} · Available</span>
+                          <span className="text-sm font-semibold text-slate-900">
+                            ₹{Number(vehicle.price).toLocaleString('en-IN')}
+                            <span className="font-normal text-slate-400"> / day</span>
+                          </span>
+                        </div>
+                        <span className="absolute bottom-[3.25rem] right-4 rounded-full px-2 py-0.5 text-[10px] font-semibold bg-emerald-100 text-emerald-800">
+                          Available
+                        </span>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
           )}
 
@@ -517,19 +772,19 @@ function AddBooking() {
                   {errors.selectedCustomer && <p className="mt-1.5 text-xs text-rose-600">{errors.selectedCustomer}</p>}
                   {selectedCustomerId && (
                     <div className="grid gap-4 sm:grid-cols-2">
-                      <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
-                      <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                      <BookingField label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
+                      <BookingField label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
                     </div>
                   )}
                 </div>
               ) : (
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Full name" name="name" value={customer.name} onChange={(value) => updateCustomer('name', value)} error={errors.name} placeholder="e.g. Ramesh Kumar" required />
-                  <Field label="Phone number" name="phone" value={customer.phone} onChange={(value) => updateCustomer('phone', value)} error={errors.phone} placeholder="+91 98765 43210" required />
-                  <Field label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
-                  <Field label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
+                  <BookingField label="Full name" name="name" value={customer.name} onChange={(value) => updateCustomer('name', value)} error={errors.name} placeholder="e.g. Ramesh Kumar" required />
+                  <BookingField label="Phone number" name="phone" value={customer.phone} onChange={(value) => updateCustomer('phone', value)} error={errors.phone} placeholder="+91 98765 43210" required />
+                  <BookingField label="Driving Licence Number" name="drivingLicence" value={customer.drivingLicence} onChange={(value) => updateCustomer('drivingLicence', value)} placeholder="Enter licence number" />
+                  <BookingField label="Aadhaar Number" name="aadhaar" value={customer.aadhaar} onChange={(value) => updateCustomer('aadhaar', value)} error={errors.aadhaar} placeholder="12-digit Aadhaar number" inputMode="numeric" pattern="[0-9]*" required />
                   <div className="sm:col-span-2">
-                    <Field label="Email address (optional)" name="email" value={customer.email} onChange={(value) => updateCustomer('email', value)} error={errors.email} placeholder="ramesh@example.com" type="email" />
+                    <BookingField label="Email address (optional)" name="email" value={customer.email} onChange={(value) => updateCustomer('email', value)} error={errors.email} placeholder="ramesh@example.com" type="email" />
                   </div>
                 </div>
               )}
@@ -542,16 +797,31 @@ function AddBooking() {
                 <h2 className="text-lg font-semibold text-slate-900">Rental details</h2>
                 <p className="mt-1 text-sm text-slate-500">Set the rental handover dates, pickup location and discounts.</p>
               </div>
+
+              {selectedVehicle && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 text-xs text-emerald-900">
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>{selectedVehicle.name} Rental Policy:</span>
+                    <span className="font-mono text-emerald-800">
+                      Min rental period: {minRequiredDays} {minRequiredDays === 1 ? 'day' : 'days'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-emerald-700">
+                    Rental duration is currently <strong>{rentalDays} {rentalDays === 1 ? 'day' : 'days'}</strong>. Base amount is calculated as ₹{dailyPrice.toLocaleString('en-IN')} / day × {rentalDays} days = ₹{baseAmount.toLocaleString('en-IN')}.
+                  </p>
+                </div>
+              )}
+
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Pickup date" name="startDate" type="date" value={rental.startDate} onChange={(value) => updateRental('startDate', value)} error={errors.startDate} min={today} required />
-                <Field label="Return date" name="endDate" type="date" value={rental.endDate} onChange={(value) => updateRental('endDate', value)} error={errors.endDate} min={rental.startDate || today} required />
-                <Field label="Pickup time" name="pickupTime" type="time" value={rental.pickupTime} onChange={(value) => updateRental('pickupTime', value)} />
-                <Field label="Return time" name="returnTime" type="time" value={rental.returnTime} onChange={(value) => updateRental('returnTime', value)} />
+                <BookingField label="Pickup date" name="startDate" type="date" value={rental.startDate} onChange={(value) => updateRental('startDate', value)} error={errors.startDate} min={today} required />
+                <BookingField label="Return date" name="endDate" type="date" value={rental.endDate} onChange={(value) => updateRental('endDate', value)} error={errors.endDate} min={rental.startDate || today} required />
+                <BookingField label="Pickup time" name="pickupTime" type="time" value={rental.pickupTime} onChange={(value) => updateRental('pickupTime', value)} />
+                <BookingField label="Return time" name="returnTime" type="time" value={rental.returnTime} onChange={(value) => updateRental('returnTime', value)} />
                 <div className="sm:col-span-2">
-                  <Field label="Pickup / Handover location" name="pickupLocation" value={rental.pickupLocation} onChange={(value) => updateRental('pickupLocation', value)} error={errors.pickupLocation} placeholder={selectedVehicle?.location || 'e.g. Store Desk, Indiranagar'} required />
+                  <BookingField label="Pickup / Handover location" name="pickupLocation" value={rental.pickupLocation} onChange={(value) => updateRental('pickupLocation', value)} error={errors.pickupLocation} placeholder={selectedVehicle?.location || 'e.g. Store Desk, Indiranagar'} required />
                 </div>
                 <div className="sm:col-span-2">
-                  <Field label="Discount amount (₹)" name="discount" type="number" value={rental.discount} onChange={(value) => updateRental('discount', value)} min="0" step="100" placeholder="0" />
+                  <BookingField label="Discount amount (₹)" name="discount" type="number" value={rental.discount} onChange={(value) => updateRental('discount', value)} min="0" step="100" placeholder="0" />
                 </div>
                 <div className="sm:col-span-2">
                   <label className="block">
@@ -739,9 +1009,12 @@ function AddBooking() {
                       <span>₹{addOnAmount.toLocaleString('en-IN')}</span>
                     </div>
                   )}
-                  <div className="flex justify-between">
-                    <span>Service fee (5%)</span>
-                    <span>₹{serviceFee.toLocaleString('en-IN')}</span>
+                  <div className="flex justify-between items-center text-xs">
+                    <div>
+                      <span className="text-slate-600">Platform service fee (5%)</span>
+                      <p className="text-[10px] text-slate-400">5% standard platform fee on base rental (₹{baseAmount} × 5%)</p>
+                    </div>
+                    <span className="font-semibold text-slate-800">₹{serviceFee.toLocaleString('en-IN')}</span>
                   </div>
                   {discountAmount > 0 && (
                     <div className="flex justify-between text-emerald-700">
@@ -768,6 +1041,77 @@ function AddBooking() {
                     <span>₹{pendingAmount.toLocaleString('en-IN')}</span>
                   </div>
                 </div>
+              </div>
+
+              {/* Mobile SMS Handover OTP Verification */}
+              <div className={`rounded-2xl border p-4 space-y-3 transition ${
+                pickupOtpVerified ? 'border-emerald-300 bg-emerald-50/40' : 'border-slate-200 bg-white'
+              }`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <span className={`grid size-9 place-items-center rounded-xl ${
+                      pickupOtpVerified ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      <Phone size={17} />
+                    </span>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-900">Rental Handover Mobile OTP</p>
+                        <span className="text-[10px] text-rose-500 font-semibold">*Required</span>
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Customer Phone: <span className="font-semibold text-slate-700">{activeCustomer.phone || '—'}</span>
+                      </p>
+                    </div>
+                  </div>
+
+                  {pickupOtpVerified ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
+                      <Check size={13} /> Handover Confirmed
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleSendPickupOtp}
+                      disabled={pickupSending || !activeCustomer.phone}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {pickupSending ? <Loader2 size={13} className="animate-spin" /> : null}
+                      {pickupOtpSent ? 'Resend SMS OTP' : 'Send Rental OTP'}
+                    </button>
+                  )}
+                </div>
+
+                <p className="text-xs text-slate-500 leading-relaxed">
+                  Bike handover karne se pehle customer ke mobile number par OTP bhejein aur match karein taaki bike rental pickup officially confirm ho sake.
+                </p>
+
+                {pickupOtpMsg.text && (
+                  <p className={`text-xs ${pickupOtpMsg.type === 'error' ? 'text-rose-600 font-medium' : 'text-emerald-700 font-medium'}`}>
+                    {pickupOtpMsg.text}
+                  </p>
+                )}
+
+                {pickupOtpSent && !pickupOtpVerified && (
+                  <div className="flex items-center gap-2 pt-1">
+                    <input
+                      type="text"
+                      placeholder="6-digit OTP"
+                      maxLength={6}
+                      value={pickupOtp}
+                      onChange={(e) => setPickupOtp(e.target.value.replace(/\D/g, ''))}
+                      className="h-9 w-36 rounded-lg border border-slate-300 px-3 text-sm font-mono text-center tracking-widest outline-none focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleVerifyPickupOtp}
+                      disabled={pickupVerifying || pickupOtp.length < 4}
+                      className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-emerald-800 px-4 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-900 disabled:opacity-50"
+                    >
+                      {pickupVerifying ? <Loader2 size={13} className="animate-spin" /> : 'Verify Code'}
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div className="flex gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
@@ -807,9 +1151,13 @@ function AddBooking() {
               ) : (
                 <button
                   type="button"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !pickupOtpVerified}
                   onClick={() => makeBooking(false)}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-xl bg-emerald-800 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-900 disabled:opacity-70"
+                  className={`inline-flex h-11 items-center justify-center gap-2 rounded-xl px-5 text-sm font-semibold text-white shadow-sm transition ${
+                    pickupOtpVerified
+                      ? 'bg-emerald-800 hover:bg-emerald-900 cursor-pointer'
+                      : 'bg-slate-400 cursor-not-allowed opacity-60'
+                  }`}
                 >
                   {isSubmitting ? (
                     <>
@@ -819,7 +1167,7 @@ function AddBooking() {
                   ) : (
                     <>
                       <Check size={16} />
-                      Create offline booking
+                      {pickupOtpVerified ? 'Confirm & Handover Bike' : 'Verify Handover OTP First'}
                     </>
                   )}
                 </button>
@@ -865,8 +1213,12 @@ function AddBooking() {
             {selectedVehicle && (
               <>
                 <div className="flex justify-between text-slate-500">
-                  <span>Rental base</span>
+                  <span>Rental base ({rentalDays} {rentalDays === 1 ? 'day' : 'days'})</span>
                   <span className="font-medium text-slate-700">₹{baseAmount.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between text-slate-500">
+                  <span>Service fee (5%)</span>
+                  <span className="font-medium text-slate-700">₹{serviceFee.toLocaleString('en-IN')}</span>
                 </div>
                 {initialPaid > 0 && (
                   <div className="flex justify-between text-emerald-700 font-medium">

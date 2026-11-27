@@ -38,6 +38,8 @@ export const customerService = {
         phone: payload.phone.trim(),
         email: payload.email && payload.email.trim() ? payload.email.trim().toLowerCase() : null,
         status: payload.status || 'Review',
+        email_verified: Boolean(payload.email_verified),
+        phone_verified: Boolean(payload.phone_verified),
       }),
     })
   },
@@ -58,6 +60,37 @@ export const customerService = {
   async deleteCustomer(customerId) {
     return apiFetch(`/customers/${encodeURIComponent(customerId)}`, {
       method: 'DELETE',
+    })
+  },
+
+  /**
+   * Send verification OTP to customer email or phone
+   * @param {Object} param0 { target, channel, customer_name }
+   */
+  async sendCustomerOtp({ target, channel, customer_name }) {
+    return apiFetch('/customers/send-otp', {
+      method: 'POST',
+      body: JSON.stringify({ target, channel, customer_name }),
+    })
+  },
+
+  /**
+   * Verify customer OTP for email or phone
+   * @param {Object} param0 { target, channel, otp }
+   */
+  async verifyCustomerOtp({ target, channel, otp }) {
+    return apiFetch('/customers/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ target, channel, otp }),
+    })
+  },
+
+  /**
+   * Manually or confirmedly mark a customer as Verified
+   */
+  async verifyCustomer(customerId) {
+    return apiFetch(`/customers/${encodeURIComponent(customerId)}/verify`, {
+      method: 'POST',
     })
   },
 }

@@ -73,7 +73,11 @@ export const authService = {
   },
 
   getToken() {
-    return localStorage.getItem('access_token') || sessionStorage.getItem('access_token')
+    return (
+      localStorage.getItem('access_token') ||
+      sessionStorage.getItem('access_token') ||
+      (sessionStorage.getItem('wavygo-demo-access') ? 'wavygo-demo-access' : null)
+    )
   },
 
   isAuthenticated() {

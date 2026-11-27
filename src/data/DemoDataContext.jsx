@@ -82,8 +82,15 @@ function auditEntry({ action, actor, targetId, targetType, reason, changes }) {
   return { id: `AU-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, action, actorName: actor?.name || 'Unknown demo user', actorRole: actor?.role || 'Unknown', targetId, targetType, reason, changes, createdAt: new Date().toISOString() }
 }
 
-function bookingInterval(booking) {
+export function bookingInterval(booking) {
   if (booking.startAt && booking.endAt) return [new Date(booking.startAt).getTime(), new Date(booking.endAt).getTime()]
+  if (booking.rental_details?.start_date && booking.rental_details?.end_date) {
+    const pickupTime = booking.rental_details.pickup_time || '10:00'
+    const returnTime = booking.rental_details.return_time || '10:00'
+    const startStr = `${booking.rental_details.start_date}T${pickupTime}`
+    const endStr = `${booking.rental_details.end_date}T${returnTime}`
+    return [new Date(startStr).getTime(), new Date(endStr).getTime()]
+  }
   const match = String(booking.dates || '').match(/([A-Za-z]{3})\s+(\d{1,2})\s*[–-]\s*([A-Za-z]{3})?\s*(\d{1,2})/)
   if (!match) return [NaN, NaN]
   const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
@@ -93,25 +100,501 @@ function bookingInterval(booking) {
   return [new Date(year, month, Number(match[2]), 10).getTime(), new Date(year, endMonth, Number(match[4]), 10).getTime()]
 }
 
-function intervalsOverlap(startA, endA, startB, endB) {
+export function intervalsOverlap(startA, endA, startB, endB) {
   return startA < endB && startB < endA
 }
 
 export function DemoDataProvider({ children }) {
-  const [data, setData] = useState(seed)
+  const isAuth = authService.isAuthenticated()
+  const [data, setData] = useState({
+    vehicles: isAuth ? [] : initialVehicles,
+    customers: isAuth ? [] : initialCustomers,
+    bookings: isAuth ? [] : initialBookings,
+    payments: isAuth ? [] : initialPayments,
+    documents: isAuth ? [] : initialDocuments,
+    maintenance: isAuth ? [] : initialMaintenance,
+    staff: isAuth ? [] : initialStaff,
+    expenses: [],
+    notifications: [],
+    financeOverview: null,
+    paymentAdjustments: [],
+    cancellationHistory: [],
+    refundAdjustments: [],
+    customerEditHistory: [],
+    auditLogs: [],
+  })
+
   const [currentDemoRole, setCurrentDemoRoleState] = useState('Admin')
   const roleNames = { Admin: 'Demo Admin', Founder: 'Demo Founder', Manager: 'Demo Manager', Employee: 'Demo Employee', Intern: 'Demo Intern' }
   const currentDemoUser = { name: roleNames[currentDemoRole], role: currentDemoRole }
   function setCurrentDemoRole(role) { if (Object.prototype.hasOwnProperty.call(roleNames, role)) setCurrentDemoRoleState(role) }
 
-  function addRecord(collection, record) { setData((current) => ({ ...current, [collection]: [record, ...(current[collection] || [])] })) }
+  const [vehiclesTotal, setVehiclesTotal] = useState(null)
+  const [vehiclesLoading, setVehiclesLoading] = useState(true)
+  const [vehiclesError, setVehiclesError] = useState(null)
+  const vehicleSyncRef = useRef(null)
+
+  const syncVehicles = useCallback(async ({ force = false } = {}) => {
+    if (vehicleSyncRef.current) {
+      if (!force) return vehicleSyncRef.current
+      await vehicleSyncRef.current
+    }
+    if (vehicleSyncRef.current) return vehicleSyncRef.current
+
+    setVehiclesLoading(true)
+    setVehiclesError(null)
+    const request = (async () => {
+      try {
+        const firstResponse = await vehicleService.listVehicles({ limit: 100 })
+        const backendVehicles = Array.isArray(firstResponse) ? [...firstResponse] : firstResponse?.items
+        if (!Array.isArray(backendVehicles)) {
+          throw new Error('Invalid vehicle list response.')
+        }
+
+        const total = Array.isArray(firstResponse)
+          ? backendVehicles.length
+          : Number.isInteger(firstResponse.total) && firstResponse.total >= 0
+            ? firstResponse.total
+            : backendVehicles.length
+
+        if (!Array.isArray(firstResponse)) {
+          const pageCount = Math.ceil(total / 100)
+          for (let nextPage = 2; nextPage <= pageCount; nextPage += 1) {
+            const nextResponse = await vehicleService.listVehicles({ page: nextPage, limit: 100 })
+            const nextVehicles = Array.isArray(nextResponse) ? nextResponse : nextResponse?.items
+            if (!Array.isArray(nextVehicles)) {
+              throw new Error(`Invalid vehicle list response for page ${nextPage}.`)
+            }
+            backendVehicles.push(...nextVehicles)
+          }
+        }
+
+        const mapped = backendVehicles.map((v) => {
+          const firstPhotoUrl = Array.isArray(v.photos) && v.photos.length > 0
+            ? (typeof v.photos[0] === 'string' ? v.photos[0] : v.photos[0]?.url)
+            : null
+
+          return {
+            id: v.id || v._id,
+            name: v.makeModel || v.name,
+            makeModel: v.makeModel || v.name,
+            trim: v.trim || '',
+            registration: v.registration || v.registrationNumber || '',
+            type: v.type || 'Motorcycle',
+            fuel: v.fuel || 'Petrol',
+            year: Number(v.year) || 2024,
+            color: v.color || '',
+            engineCapacity: v.engineCapacity ? Number(v.engineCapacity) : null,
+            rcStatus: v.rcStatus || 'Verified',
+            seats: Number(v.seats) || 2,
+            showOnWavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
+            show_on_wavygo: Boolean(v.showOnWavygo ?? (v.status === 'Online')),
+            status: Boolean(v.showOnWavygo ?? (v.status === 'Online')) ? 'Online' : 'Offline',
+            availability: v.fleetAvailability || v.availability || 'Available',
+            fleetAvailability: v.fleetAvailability || v.availability || 'Available',
+            price: Number(v.dailyRate || v.price || 0),
+            dailyRate: Number(v.dailyRate || v.price || 0),
+            minimumDays: Number(v.minimumDays || v.minimum_days || 1),
+            minimum_days: Number(v.minimumDays || v.minimum_days || 1),
+            location: v.pickupLocation?.address || v.pickupAddress || v.location || '',
+            image: firstPhotoUrl || v.image || (v.type === 'Electric' ? '⚡' : v.type === 'Scooter' ? '🛵' : '🏍️'),
+            photos: v.photos || [],
+            documents: v.documents || [],
+            backendSynced: true,
+          }
+        })
+        setData((current) => ({
+          ...current,
+          vehicles: mapped,
+        }))
+        setVehiclesTotal(total)
+        return mapped
+      } catch (err) {
+        console.warn('syncVehicles error:', err)
+        setVehiclesError(err?.message || 'Unable to load vehicles.')
+        return null
+      } finally {
+        setVehiclesLoading(false)
+        vehicleSyncRef.current = null
+      }
+    })()
+    vehicleSyncRef.current = request
+    return request
+  }, [])
+
+  async function syncCustomers() {
+    try {
+      const res = await customerService.listCustomers({ limit: 100 })
+      const backendCustomers = Array.isArray(res) ? res : res?.customers || res?.items || []
+      const mapped = backendCustomers.map((c) => ({
+        id: c.id || c._id,
+        name: c.name,
+        phone: c.phone,
+        email: c.email || '',
+        status: c.status || 'Verified',
+        bookings: c.bookings ?? 0,
+        active: c.active ?? 0,
+        paid: c.paid ?? 0,
+        pending: c.pending ?? 0,
+        backendSynced: true,
+      }))
+
+      setData((current) => {
+        const customerMap = new Map()
+
+        // 1. Add mapped backend customers
+        mapped.forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key) customerMap.set(key, c)
+        })
+
+        // 2. Retain any locally added customer
+        ;(current.customers || []).forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key && !customerMap.has(key)) {
+            customerMap.set(key, c)
+          }
+        })
+
+        // 3. Ensure any customer entered during bookings is displayed in customers
+        ;(current.bookings || []).forEach((b) => {
+          const cName = (b.customer || b.customer_details?.name || '').trim()
+          const cPhone = (b.phone || b.customer_details?.phone || '').trim()
+          const cEmail = (b.email || b.customer_details?.email || '').trim()
+          if (cName) {
+            const key = (cPhone || cName).toLowerCase().trim()
+            if (!customerMap.has(key)) {
+              customerMap.set(key, {
+                id: b.customer_details?.id || `CU-${String(b.id || Date.now()).replace(/\D/g, '').slice(-5) || '101'}`,
+                name: cName,
+                phone: cPhone || '—',
+                email: cEmail,
+                status: 'Verified',
+                bookings: 1,
+                active: b.status === 'Active' ? 1 : 0,
+                paid: Number(b.paid) || 0,
+                pending: Number(b.pending) || 0,
+                backendSynced: Boolean(b.backendSynced),
+              })
+            }
+          }
+        })
+
+        return {
+          ...current,
+          customers: Array.from(customerMap.values()),
+        }
+      })
+    } catch (err) {
+      console.warn('syncCustomers error:', err)
+      setData((current) => {
+        const customerMap = new Map()
+        ;(current.customers || []).forEach((c) => {
+          const key = (c.phone || c.name || c.id || '').toLowerCase().trim()
+          if (key) customerMap.set(key, c)
+        })
+        ;(current.bookings || []).forEach((b) => {
+          const cName = (b.customer || b.customer_details?.name || '').trim()
+          const cPhone = (b.phone || b.customer_details?.phone || '').trim()
+          if (cName) {
+            const key = (cPhone || cName).toLowerCase().trim()
+            if (!customerMap.has(key)) {
+              customerMap.set(key, {
+                id: b.customer_details?.id || `CU-${String(b.id || Date.now()).replace(/\D/g, '').slice(-5) || '101'}`,
+                name: cName,
+                phone: cPhone || '—',
+                email: b.email || b.customer_details?.email || '',
+                status: 'Verified',
+                bookings: 1,
+                active: b.status === 'Active' ? 1 : 0,
+                paid: Number(b.paid) || 0,
+                pending: Number(b.pending) || 0,
+                backendSynced: false,
+              })
+            }
+          }
+        })
+        return {
+          ...current,
+          customers: Array.from(customerMap.values()),
+        }
+      })
+    }
+  }
+
+  async function syncOfflineBookings() {
+    try {
+      const backendBookings = await bookingService.listOfflineBookings()
+      const list = Array.isArray(backendBookings) ? backendBookings : []
+      const mapped = list.map((b) => {
+        const vehicleId = b.vehicle_details?.id || b.vehicle_id || b.vehicleId
+        const startAt = b.rental_details?.start_date
+          ? `${b.rental_details.start_date}T${b.rental_details.pickup_time || '10:00'}`
+          : b.startAt
+        const endAt = b.rental_details?.end_date
+          ? `${b.rental_details.end_date}T${b.rental_details.return_time || '10:00'}`
+          : b.endAt
+
+        return {
+          id: b.id,
+          customer: b.customer,
+          vehicle: b.vehicle,
+          vehicleId,
+          startAt,
+          endAt,
+          dates: b.dates,
+          type: b.type || 'Offline',
+          status: b.status || 'Active',
+          paid: Number(b.paid) || 0,
+          pending: Number(b.pending) || 0,
+          base_amount: b.base_amount,
+          add_on_amount: b.add_on_amount,
+          service_fee: b.service_fee,
+          discount_amount: b.discount_amount,
+          deposit_amount: b.deposit_amount,
+          total_amount: Number(b.total_amount) || 0,
+          rental_days: b.rental_days,
+          vehicle_details: b.vehicle_details,
+          customer_details: b.customer_details,
+          rental_details: b.rental_details,
+          payment_details: b.payment_details,
+          notes: b.notes,
+          backendSynced: true,
+        }
+      })
+      setData((current) => ({
+        ...current,
+        bookings: mapped,
+      }))
+      // Sync customer records whenever bookings are refreshed
+      syncCustomers()
+    } catch (err) {
+      console.warn('syncOfflineBookings error:', err)
+    }
+  }
+
+  async function syncDocuments() {
+    try {
+      const backendDocs = await documentService.listDocuments()
+      const list = Array.isArray(backendDocs) ? backendDocs : []
+      const mapped = list.map((d) => ({
+        id: d.id,
+        name: d.name,
+        category: d.category,
+        date: d.date,
+        status: d.status || 'Verified',
+        scope: d.scope || 'Business',
+        file_url: d.file_url,
+        public_id: d.public_id,
+        resource_type: d.resource_type,
+        file_name: d.file_name,
+        file_size: d.file_size,
+        format: d.format,
+        vehicle_id: d.vehicle_id,
+        vehicle_name: d.vehicle_name,
+        notes: d.notes,
+        updated_at: d.updated_at,
+        backendSynced: true,
+      }))
+      setData((current) => ({
+        ...current,
+        documents: mapped,
+      }))
+    } catch (err) {
+      console.warn('syncDocuments error:', err)
+    }
+  }
+
+  async function syncPayments() {
+    try {
+      const backendPayments = await paymentService.listPayments()
+      const list = Array.isArray(backendPayments) ? backendPayments : []
+      const mapped = list.map((p) => ({
+        id: p.id,
+        booking: p.booking || p.booking_id,
+        customer: p.customer || p.customer_name,
+        method: p.method || 'UPI',
+        date: p.date || p.payment_date,
+        amount: Number(p.amount) || 0,
+        status: p.status || 'Paid',
+        notes: p.notes,
+        backendSynced: true,
+      }))
+      setData((current) => ({
+        ...current,
+        payments: mapped,
+      }))
+    } catch (err) {
+      console.warn('syncPayments error:', err)
+    }
+  }
+
+  async function syncMaintenance() {
+    try {
+      const backendMaint = await maintenanceService.listMaintenance()
+      const list = Array.isArray(backendMaint) ? backendMaint : []
+      const mapped = list.map((m) => ({
+        id: m.id,
+        vehicle: m.vehicle || m.vehicle_name,
+        type: m.type || m.maintenance_type,
+        start: m.start || m.start_date,
+        expected: m.expected || m.expected_date,
+        cost: Number(m.cost || m.estimated_cost) || 0,
+        payment: m.payment || m.payment_status || 'Paid',
+        status: m.status || 'Ongoing',
+        backendSynced: true,
+      }))
+      setData((current) => ({
+        ...current,
+        maintenance: mapped,
+      }))
+    } catch (err) {
+      console.warn('syncMaintenance error:', err)
+    }
+  }
+
+  async function syncFinance() {
+    try {
+      const [overview, expensesList] = await Promise.all([
+        financeService.getOverview().catch(() => null),
+        financeService.listExpenses().catch(() => []),
+      ])
+      setData((current) => ({
+        ...current,
+        financeOverview: overview,
+        expenses: Array.isArray(expensesList)
+          ? expensesList.map((e) => ({ ...e, backendSynced: true }))
+          : [],
+      }))
+    } catch (err) {
+      console.warn('syncFinance error:', err)
+    }
+  }
+
+  async function syncNotifications() {
+    try {
+      const res = await notificationService.listNotifications({ limit: 100 })
+      const list = Array.isArray(res) ? res : []
+      setData((current) => ({
+        ...current,
+        notifications: list,
+      }))
+    } catch (err) {
+      console.warn('syncNotifications error:', err)
+    }
+  }
+
+  async function markNotificationRead(id) {
+    try {
+      await notificationService.markRead(id)
+      setData((current) => ({
+        ...current,
+        notifications: (current.notifications || []).map((n) =>
+          n.id === id ? { ...n, is_read: true } : n,
+        ),
+      }))
+    } catch (err) {
+      console.warn('markNotificationRead error:', err)
+    }
+  }
+
+  async function markAllNotificationsRead() {
+    try {
+      await notificationService.markAllRead()
+      setData((current) => ({
+        ...current,
+        notifications: (current.notifications || []).map((n) => ({ ...n, is_read: true })),
+      }))
+    } catch (err) {
+      console.warn('markAllNotificationsRead error:', err)
+    }
+  }
+
+  async function syncStaff() {
+    try {
+      const res = await staffService.listStaff()
+      const list = Array.isArray(res) ? res : res?.items || []
+      setData((current) => ({
+        ...current,
+        staff: list.map((s) => ({
+          id: s.id || s._id,
+          name: s.name,
+          role: s.role,
+          phone: s.phone,
+          salary: Number(s.salary) || 0,
+          attendance: s.attendance || '26 / 26 days',
+          nextSalary: s.next_salary || s.nextSalary || '—',
+          status: s.status || 'Active',
+          documents: s.documents || [],
+          backendSynced: true,
+        })),
+      }))
+    } catch (err) {
+      console.warn('syncStaff error:', err)
+    }
+  }
+
+  async function deleteNotification(id) {
+    try {
+      await notificationService.deleteNotification(id)
+      setData((current) => ({
+        ...current,
+        notifications: (current.notifications || []).filter((n) => n.id !== id),
+      }))
+    } catch (err) {
+      console.warn('deleteNotification error:', err)
+    }
+  }
+
+
+  useEffect(() => {
+    async function init() {
+      await Promise.allSettled([
+        syncVehicles(),
+        syncCustomers(),
+        syncOfflineBookings(),
+        syncDocuments(),
+        syncPayments(),
+        syncMaintenance(),
+        syncFinance(),
+        syncStaff(),
+        syncNotifications(),
+      ])
+    }
+
+    init()
+  }, [])
+
+  function addRecord(collection, record) {
+    setData((current) => ({
+      ...current,
+      [collection]: [record, ...(current[collection] || [])],
+    }))
+  }
+
   function updateRecord(collection, id, changes) {
-    if (['customers', 'payments', 'paymentAdjustments'].includes(collection)) return { success: false, error: 'Use the dedicated update function for this record.' }
-    setData((current) => ({ ...current, [collection]: (current[collection] || []).map((record) => record.id === id ? { ...record, ...changes } : record) }))
+    if (['customers', 'paymentAdjustments'].includes(collection)) {
+      return { success: false, error: 'Use the dedicated update function for this record.' }
+    }
+    setData((current) => ({
+      ...current,
+      [collection]: (current[collection] || []).map((record) =>
+        (record.id === id || (collection === 'vehicles' && (record.name === id || record.makeModel === id || record.registration === id)))
+          ? { ...record, ...changes }
+          : record,
+      ),
+    }))
     return { success: true }
   }
 
-  function updateCustomerDetails({ customerId, changes, reason, actor }) {
+  function deleteRecord(collection, id) {
+    setData((current) => ({
+      ...current,
+      [collection]: (current[collection] || []).filter((record) => record.id !== id),
+    }))
+  }
+
+function updateCustomerDetails({ customerId, changes, reason, actor }) {
     const customer = data.customers.find((item) => item.id === customerId)
     if (!customer) return { success: false, error: 'Customer not found.' }
     if (!hasPermission(actor, CUSTOMER_EDIT_ROLES)) return { success: false, error: 'You do not have permission to edit customer details.' }
@@ -162,9 +645,14 @@ export function DemoDataProvider({ children }) {
       return { available: false, error: `${vehicle.name} is currently unavailable (${vehicle.availability === 'Maintenance' ? 'maintenance' : 'offline'}).` }
     }
     const conflict = data.bookings.find((booking) => {
-      if (booking.id === excludeBookingId || !['Confirmed', 'Active'].includes(booking.status)) return false
-      const linkedVehicleId = booking.vehicleId || data.vehicles.find((item) => item.name === booking.vehicle)?.id
-      if (linkedVehicleId !== vehicleId) return false
+      if (booking.id === excludeBookingId || ['Cancelled', 'Completed'].includes(booking.status)) return false
+      const linkedVehicleId = booking.vehicle_details?.id || booking.vehicleId || booking.vehicle_id || data.vehicles.find((item) => item.name === booking.vehicle)?.id
+      const linkedVehicleName = booking.vehicle_details?.name || booking.vehicle
+      if (linkedVehicleId) {
+        if (linkedVehicleId !== vehicleId) return false
+      } else if (linkedVehicleName && linkedVehicleName !== vehicle.name) {
+        return false
+      }
       const [existingStart, existingEnd] = bookingInterval(booking)
       return Number.isFinite(existingStart) && Number.isFinite(existingEnd) && intervalsOverlap(start, end, existingStart, existingEnd)
     })
@@ -256,7 +744,46 @@ export function DemoDataProvider({ children }) {
     return [{ id: `ORIGINAL-${payment.id}`, type: 'Original payment', amount: Number(payment.amount), date: payment.date, reason: 'Original payment record' }, ...data.paymentAdjustments.filter((item) => item.paymentId === paymentId).map((item) => ({ ...item, type: 'Correction', amount: item.correctedAmount, date: item.correctedAt }))]
   }
 
-  return <DemoDataContext.Provider value={{ ...data, currentDemoUser, currentDemoRole, setCurrentDemoRole, addRecord, updateRecord, updateCustomerDetails, addPaymentAdjustment, getEffectivePaymentAmount, getPaymentHistory, checkVehicleAvailability, createDemoBooking, cancelDemoBooking }}>{children}</DemoDataContext.Provider>
+  return (
+    <DemoDataContext.Provider
+      value={{
+        ...data,
+        vehiclesTotal,
+        vehiclesLoading,
+        vehiclesError,
+        currentDemoUser,
+        currentDemoRole,
+        setCurrentDemoRole,
+        addRecord,
+        updateRecord,
+        deleteRecord,
+        updateCustomerDetails,
+        addPaymentAdjustment,
+        getEffectivePaymentAmount,
+        getPaymentHistory,
+        checkVehicleAvailability,
+        bookingInterval,
+        intervalsOverlap,
+        createDemoBooking,
+        cancelDemoBooking,
+        syncVehicles,
+        syncCustomers,
+        syncOfflineBookings,
+        syncDocuments,
+        syncPayments,
+        syncMaintenance,
+        syncFinance,
+        syncStaff,
+        syncNotifications,
+        markNotificationRead,
+        markAllNotificationsRead,
+        deleteNotification,
+        unreadNotificationsCount: (data.notifications || []).filter((n) => !n.is_read).length,
+      }}
+    >
+      {children}
+    </DemoDataContext.Provider>
+  )
 }
 
 export function useDemoData() {

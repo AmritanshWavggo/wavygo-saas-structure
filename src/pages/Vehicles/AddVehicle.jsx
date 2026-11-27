@@ -34,6 +34,7 @@ const initialData = {
   rate: '',
   location: '',
   minimumDays: '1',
+  minRentalPackageAmount: '',
   pickupNotes: '',
 }
 
@@ -41,7 +42,7 @@ function VehicleInput({ label, name, placeholder, type = 'text', required = fals
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-semibold text-slate-700">{label}{required && <span className="ml-1 text-rose-500">*</span>}</span>
-      <input type={type} value={data[name]} onChange={(event) => update(name, event.target.value)} placeholder={placeholder} {...props} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${errors[name] ? 'border-rose-300' : 'border-slate-200'}`} />
+      <input type={type} value={data[name] ?? ''} onChange={(event) => update(name, event.target.value)} placeholder={placeholder} {...props} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${errors[name] ? 'border-rose-300' : 'border-slate-200'}`} />
       {errors[name] ? <span className="mt-1 block text-xs text-rose-600">{errors[name]}</span> : help ? <span className="mt-1 block text-xs text-slate-400">{help}</span> : null}
     </label>
   )
@@ -51,7 +52,7 @@ function VehicleSelect({ label, name, options, required = false, data, errors, u
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-semibold text-slate-700">{label}{required && <span className="ml-1 text-rose-500">*</span>}</span>
-      <select value={data[name]} onChange={(event) => update(name, event.target.value)} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-700 outline-none transition focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${errors[name] ? 'border-rose-300' : 'border-slate-200'}`}>
+      <select value={data[name] ?? ''} onChange={(event) => update(name, event.target.value)} className={`h-11 w-full rounded-xl border bg-white px-3.5 text-sm text-slate-700 outline-none transition focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100 ${errors[name] ? 'border-rose-300' : 'border-slate-200'}`}>
         <option value="">Select {label.toLowerCase()}</option>{options.map((option) => <option key={option}>{option}</option>)}
       </select>
       {errors[name] && <span className="mt-1 block text-xs text-rose-600">{errors[name]}</span>}
@@ -71,10 +72,32 @@ function AddVehicle() {
   const [submitError, setSubmitError] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Clear only the edited field's validation message while preserving other step errors.
   function update(field, value) {
-    setData((current) => ({ ...current, [field]: value }))
-    setErrors((current) => ({ ...current, [field]: '' }))
+    setData((current) => {
+      const next = { ...current, [field]: value }
+      if (field === 'minimumDays') {
+        const days = Math.max(1, parseInt(value, 10) || 1)
+        if (current.rate && !isNaN(Number(current.rate))) {
+          next.minRentalPackageAmount = String(Math.round(Number(current.rate) * days))
+        } else if (current.minRentalPackageAmount && !isNaN(Number(current.minRentalPackageAmount))) {
+          next.rate = String(Math.round(Number(current.minRentalPackageAmount) / days))
+        }
+      } else if (field === 'minRentalPackageAmount') {
+        const pkgAmt = parseFloat(value) || 0
+        const days = Math.max(1, parseInt(current.minimumDays, 10) || 1)
+        if (pkgAmt > 0) {
+          next.rate = String(Math.round(pkgAmt / days))
+        }
+      } else if (field === 'rate') {
+        const dailyRate = parseFloat(value) || 0
+        const days = Math.max(1, parseInt(current.minimumDays, 10) || 1)
+        if (dailyRate > 0) {
+          next.minRentalPackageAmount = String(Math.round(dailyRate * days))
+        }
+      }
+      return next
+    })
+    setErrors((current) => ({ ...current, [field]: '', rate: '', minimumDays: '', minRentalPackageAmount: '' }))
   }
 
   function validateStep() {
@@ -172,9 +195,26 @@ function AddVehicle() {
         </div>}
 
         {step === 1 && <div className="space-y-5">
-          <div className="mb-1"><h2 className="text-lg font-semibold text-slate-900">Pricing & availability</h2><p className="mt-1 text-sm text-slate-500">Set the daily rate and where guests can collect this vehicle.</p></div>
-          <div className="grid gap-4 sm:grid-cols-2"><VehicleInput data={data} errors={errors} update={update} label="Daily rental rate" name="rate" type="number" min="1" placeholder="e.g. 2,500" required help="Your demo rate is shown in Indian rupees per day." /><VehicleInput data={data} errors={errors} update={update} label="Minimum rental period" name="minimumDays" type="number" min="1" required help="How many days a booking must be for." /><VehicleInput data={data} errors={errors} update={update} label="Pickup location" name="location" placeholder="e.g. Indiranagar, Bengaluru" required /><label className="block sm:col-span-2"><span className="mb-1.5 block text-sm font-semibold text-slate-700">Pickup instructions <span className="font-normal text-slate-400">(optional)</span></span><textarea value={data.pickupNotes} onChange={(event) => update('pickupNotes', event.target.value)} rows="3" placeholder="Share a helpful note for your renter…" className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100" /></label></div>
-          <div className="flex gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-4"><IndianRupee size={18} className="mt-0.5 shrink-0 text-emerald-700" /><p className="text-xs leading-5 text-emerald-900/75"><span className="font-semibold">Manual pickup location.</span> Map selection is unavailable because no map configuration is present. Location details are not saved until a vehicle API is connected.</p></div>
+          <div className="mb-1"><h2 className="text-lg font-semibold text-slate-900">Pricing & availability</h2><p className="mt-1 text-sm text-slate-500">Set the minimum rental period, package amount, daily rate, and pickup location.</p></div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <VehicleInput data={data} errors={errors} update={update} label="Minimum rental period (Days)" name="minimumDays" type="number" min="1" required help="How many days a customer must rent at minimum." />
+            <VehicleInput data={data} errors={errors} update={update} label="Minimum rental package amount (₹)" name="minRentalPackageAmount" type="number" min="1" placeholder="e.g. 1,500" help="Total cost for the minimum rental period (auto-calculates daily rate)." />
+            <VehicleInput data={data} errors={errors} update={update} label="Daily rental rate (₹ / day)" name="rate" type="number" min="1" placeholder="e.g. 500" required help="Calculated as: Package amount ÷ Minimum rental days." />
+            <VehicleInput data={data} errors={errors} update={update} label="Pickup location" name="location" placeholder="e.g. Indiranagar, Bengaluru" required />
+            <div className="sm:col-span-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-xs font-semibold text-emerald-900">
+                <span>Calculated Rental Formula:</span>
+                <span className="font-mono text-sm text-emerald-800">
+                  ₹{Number(data.rate || 0).toLocaleString('en-IN')} / day × {Number(data.minimumDays || 1)} {Number(data.minimumDays || 1) === 1 ? 'day' : 'days'} = ₹{(Number(data.rate || 0) * Number(data.minimumDays || 1)).toLocaleString('en-IN')} min booking total
+                </span>
+              </div>
+              <p className="mt-1.5 text-[11px] text-emerald-700">
+                Customers renting this vehicle cannot book for less than {Number(data.minimumDays || 1)} {Number(data.minimumDays || 1) === 1 ? 'day' : 'days'}. The minimum package amount will be charged based on this policy.
+              </p>
+            </div>
+            <label className="block sm:col-span-2"><span className="mb-1.5 block text-sm font-semibold text-slate-700">Pickup instructions <span className="font-normal text-slate-400">(optional)</span></span><textarea value={data.pickupNotes} onChange={(event) => update('pickupNotes', event.target.value)} rows="3" placeholder="Share a helpful note for your renter…" className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3.5 py-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100" /></label>
+          </div>
+          <div className="flex gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-4"><IndianRupee size={18} className="mt-0.5 shrink-0 text-emerald-700" /><p className="text-xs leading-5 text-emerald-900/75"><span className="font-semibold">Minimum rental period calculation active.</span> Daily rate is automatically synchronized with the minimum package amount and minimum rental duration.</p></div>
         </div>}
 
         {step === 2 && <div className="space-y-5">
@@ -189,7 +229,7 @@ function AddVehicle() {
         {step === 3 && <div className="space-y-5">
           <div className="mb-1"><h2 className="text-lg font-semibold text-slate-900">Review your vehicle</h2><p className="mt-1 text-sm text-slate-500">Everything look right? You can go back to make changes.</p></div>
           <div className="flex items-center gap-4 rounded-2xl border border-emerald-100 bg-gradient-to-r from-emerald-50 to-white p-4 sm:p-5"><span className="grid size-14 place-items-center overflow-hidden rounded-2xl bg-white text-3xl shadow-sm">{photo?.preview ? <img src={photo.preview} alt="" className="h-full w-full object-cover" /> : data.type === 'Electric' ? '⚡' : data.type === 'Scooter' ? '🛵' : '🏍️'}</span><div className="min-w-0"><h3 className="truncate text-base font-semibold text-slate-900">{data.makeModel || 'Vehicle name'}</h3><p className="mt-1 text-sm text-slate-500">{data.registration.toUpperCase() || 'Registration number'} · {data.year}</p></div><span className="ml-auto shrink-0 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">Online</span></div>
-          <div className="grid gap-3 sm:grid-cols-2">{[['Variant / trim', data.trim], ['Registration / RC', data.registration.toUpperCase()], ['Model year', data.year], ['Vehicle type', data.type], ['Fuel & transmission', `${data.fuel} · ${data.transmission}`], ['Color', data.color], ['Engine capacity', data.engineCapacity ? `${data.engineCapacity} cc` : data.fuel === 'Electric' ? 'Electric' : 'Not specified'], ['RC status', data.rcStatus], ['Seating', `${data.seats} ${Number(data.seats) === 1 ? 'seat' : 'seats'}`], ['Daily rate', `₹${Number(data.rate || 0).toLocaleString('en-IN')} / day`], ['Minimum rental', `${data.minimumDays} ${Number(data.minimumDays) === 1 ? 'day' : 'days'}`], ['Pickup location', data.location], ['Pickup instructions', data.pickupNotes]].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-100 bg-slate-50/60 p-3.5"><p className="text-xs font-medium text-slate-400">{label}</p><p className="mt-1.5 text-sm font-semibold text-slate-800">{value || '—'}</p></div>)}</div>
+          <div className="grid gap-3 sm:grid-cols-2">{[['Variant / trim', data.trim], ['Registration / RC', data.registration.toUpperCase()], ['Model year', data.year], ['Vehicle type', data.type], ['Fuel & transmission', `${data.fuel} · ${data.transmission}`], ['Color', data.color], ['Engine capacity', data.engineCapacity ? `${data.engineCapacity} cc` : data.fuel === 'Electric' ? 'Electric' : 'Not specified'], ['RC status', data.rcStatus], ['Seating', `${data.seats} ${Number(data.seats) === 1 ? 'seat' : 'seats'}`], ['Daily rate', `₹${Number(data.rate || 0).toLocaleString('en-IN')} / day`], ['Minimum rental', `${data.minimumDays} ${Number(data.minimumDays) === 1 ? 'day' : 'days'}`], ['Min package amount', `₹${(Number(data.rate || 0) * Number(data.minimumDays || 1)).toLocaleString('en-IN')}`], ['Pickup location', data.location], ['Pickup instructions', data.pickupNotes]].map(([label, value]) => <div key={label} className="rounded-xl border border-slate-100 bg-slate-50/60 p-3.5"><p className="text-xs font-medium text-slate-400">{label}</p><p className="mt-1.5 text-sm font-semibold text-slate-800">{value || '—'}</p></div>)}</div>
           <div className="rounded-xl border border-slate-100 bg-slate-50/60 p-4"><p className="text-sm font-semibold text-slate-800">Selected documents ({documents.length})</p>{documents.length ? documents.map((document) => <p key={document.id} className="mt-1 text-xs text-slate-600">{document.type}: {document.name}</p>) : <p className="mt-1 text-xs text-slate-500">No documents selected.</p>}</div>
           <div className="flex items-start gap-3 rounded-xl bg-emerald-50 p-4"><BadgeCheck size={17} className="mt-0.5 shrink-0 text-emerald-700" /><p className="text-xs leading-5 text-emerald-900">Vehicle details, photos and documents will be saved to MongoDB via the WavyGo backend API.</p></div>
         </div>}

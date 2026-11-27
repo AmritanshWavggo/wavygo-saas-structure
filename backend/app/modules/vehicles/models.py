@@ -109,8 +109,9 @@ class VehicleFile(BaseModel):
     # PDFs are uploaded with resource_type="raw"; images use "image".
     # Defaults to "image" so legacy records without this field remain valid.
     resource_type: str = Field(default="image", alias="resourceType")
+    status: Optional[str] = "Verified"
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "allow"}
 
 
 # ---------------------------------------------------------------------------
