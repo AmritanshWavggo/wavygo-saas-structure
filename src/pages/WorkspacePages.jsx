@@ -36,6 +36,7 @@ import { reportService } from '../services/reportService.js'
 import { staffService } from '../services/staffService.js'
 import { vehicleService } from '../services/vehicleService.js'
 import { RecordPaymentModal } from '../components/RecordPaymentModal.jsx'
+import { BookingLifecycleDialog } from '../components/BookingLifecycleDialogs.jsx'
 import {
   BarChart,
   Button,
@@ -64,6 +65,10 @@ function PaymentStatusBadge({ status }) {
       {status || 'Unpaid'}
     </span>
   )
+}
+
+function BookingStatusBadge({ status }) {
+  return <StatusBadge status={status === 'Active' ? 'Rented' : status} />
 }
 
 const currency = (amount) =>
@@ -417,19 +422,28 @@ function Customers() {
 }
 
 function Bookings() {
-  const { bookings, vehicles, customers, currentDemoUser, updateRecord, createDemoBooking, cancelDemoBooking, cancellationHistory = [], refundAdjustments = [] } = useDemoData()
+  // Merge resolution: combined the incoming demo/RecordForm state with HEAD's backend sync state.
+  const { bookings, vehicles, customers, currentDemoUser, createDemoBooking, cancelDemoBooking, syncOfflineBookings, syncPayments, syncCustomers, syncVehicles } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
-  const [paymentForm, setPaymentForm] = useState(null)
+  const [paymentModalBooking, setPaymentModalBooking] = useState(null)
+  const [lifecycleBooking, setLifecycleBooking] = useState(null)
+  const [lifecycleAction, setLifecycleAction] = useState(null)
   const [showBookingForm, setShowBookingForm] = useState(false)
   const [cancelForm, setCancelForm] = useState(null)
   const [formError, setFormError] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  useEffect(() => {
+    syncOfflineBookings?.()
+  }, [])
+
   const online = bookings.filter((item) => item.type === 'Online').length
   const offline = bookings.filter((item) => item.type === 'Offline').length
   const revenue = bookings.reduce((sum, item) => sum + Number(item.paid || 0), 0)
   const pending = bookings.reduce((sum, item) => sum + Number(item.pending || 0), 0)
-  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Completed', 'Cancelled']
+  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Returned', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
     return termMatch && (tab === 'All' || booking.type === tab || booking.status === tab)
@@ -464,6 +478,13 @@ function Bookings() {
     }
   }
 
+  async function syncLifecycleData() {
+    if (syncOfflineBookings) await syncOfflineBookings()
+    if (syncCustomers) await syncCustomers()
+    if (syncVehicles) await syncVehicles({ force: true })
+    if (syncPayments) await syncPayments()
+  }
+
   return (
     <div>
       <PageHeader title="Bookings" description="Check vehicle availability, prevent overlapping rentals and manage cancellations." action={<Button onClick={() => { setFormError(''); setShowBookingForm(true) }}><Plus size={16} />Offline booking</Button>} />
@@ -476,36 +497,126 @@ function Bookings() {
       <Card className="overflow-hidden">
         <Tabs items={tabs.map((label) => ({ label, value: label, count: label === 'All' ? bookings.length : undefined }))} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search ID, customer or vehicle…" /></div>
-        <DataTable rows={filtered} columns={[
-          { key: 'id', label: 'Booking ID', render: (row) => <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">{row.id}</button> },
-          { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
-          { key: 'dates', label: 'Rental dates', render: (row) => <span className="text-xs">{row.dates}{row.startAt && <span className="mt-1 block text-[10px] text-slate-400">{new Date(row.startAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})} – {new Date(row.endAt).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</span> },
-          { key: 'type', label: 'Type' }, { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-          { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) }, { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
-          { key: 'actions', label: 'Actions', render: (row) => <div className="flex flex-wrap gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button>{row.pending > 0 && ['Confirmed','Active'].includes(row.status) && <Button variant="quiet" className="min-h-8 px-2" onClick={() => setPaymentForm(row)}>Update payment</Button>}{['Confirmed','Active'].includes(row.status) && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCancelForm(row) }}>Cancel</Button>}</div> },
-        ]} />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">Demo booking records · {filtered.length} shown · Overlap checks run against demo booking dates and times</p>
+        {/* Merge resolution: kept HEAD (backend lifecycle UI) over the incoming demo forms. */}
+        <DataTable
+          rows={filtered}
+          emptyTitle="No customers registered yet"
+          emptyText="Customers added through bookings or manually will appear here."
+          columns={[
+            {
+              key: 'id',
+              label: 'Booking ID',
+              render: (row) => (
+                <div className="flex items-center gap-1.5">
+                  <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
+                    {row.id}
+                  </button>
+                  {row.backendSynced && (
+                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
+                      API
+                    </span>
+                  )}
+                </div>
+              ),
+            },
+            { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
+            { key: 'dates', label: 'Rental dates' },
+            { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
+            { key: 'status', label: 'Status', render: (row) => <BookingStatusBadge status={row.status} /> },
+            {
+              key: 'payment_status',
+              label: 'Payment',
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                return <PaymentStatusBadge status={pStatus} />
+              },
+            },
+            { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) },
+            {
+              key: 'outstanding',
+              label: 'Outstanding',
+              render: (row) => {
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                return currency(out)
+              },
+            },
+            {
+              key: 'actions',
+              label: '',
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                const canPay = pStatus !== 'Paid' && out > 0 && row.status !== 'Cancelled'
+                const action = row.status === 'Confirmed' ? 'handover' : row.status === 'Active' ? 'return' : row.status === 'Returned' ? 'complete' : null
+                return (
+                  <div className="flex gap-1">
+                    <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
+                      <Eye size={15} />
+                    </Button>
+                    {canPay && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => setPaymentModalBooking(row)}>
+                        Record payment
+                      </Button>
+                    )}
+                    {action && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => { setLifecycleBooking(row); setLifecycleAction(action) }}>
+                        {action === 'handover' ? 'Mark as Rented / Handover' : action === 'return' ? 'Mark as Returned' : 'Complete Booking'}
+                      </Button>
+                    )}
+                  </div>
+                )
+              },
+            },
+          ]}
+        />
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+          Showing {filtered.length} bookings · Offline desk & online reservations
+        </p>
       </Card>
-      {showBookingForm && <RecordForm title="Create offline booking" onClose={() => { setShowBookingForm(false); setFormError('') }} fields={[
-        { name: 'customerId', label: 'Customer', type: 'select', options: customerOptions, required: true },
-        { name: 'vehicleId', label: 'Vehicle', type: 'select', options: vehicleOptions, required: true },
-        { name: 'startAt', label: 'Start date & time', type: 'datetime-local', required: true },
-        { name: 'endAt', label: 'End date & time', type: 'datetime-local', required: true },
-        { name: 'paid', label: 'Amount paid (₹)', type: 'number', min: 0, initial: '0' },
-      ]} onSave={saveBooking} externalError={formError} saveLabel="Check availability & create" />}
-      {cancelForm && <RecordForm title={`Cancel booking · ${cancelForm.id}`} onClose={() => { setCancelForm(null); setFormError('') }} initialValues={{ refundAmount: String(cancelForm.paid || 0) }} fields={[
-        { name: 'reason', label: 'Cancellation reason', required: true, wide: true, placeholder: 'Enter why this booking is being cancelled' },
-        { name: 'refundAmount', label: `Refund amount (₹) · max ${currency(cancelForm.paid)}`, type: 'number', min: 0, step: '0.01', required: true },
-      ]} onSave={saveCancellation} externalError={formError} saveLabel="Confirm cancellation" />}
-      {selected && <Modal title={`Booking ${selected.id}`} onClose={() => setSelected(null)}>
-        <div className="space-y-3">
-          {Object.entries(selected).filter(([key]) => !['customerId','vehicleId'].includes(key)).map(([key,value]) => <div key={key} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5"><span className="text-xs text-slate-500">{key.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase())}</span><span className="max-w-[65%] text-right text-xs font-medium text-slate-800">{['paid','pending','totalAmount','refundedAmount'].includes(key) ? currency(value) : String(value ?? '—')}</span></div>)}
-          {cancellationHistory.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-xl bg-rose-50 p-3 text-xs leading-5 text-rose-900"><strong>Cancellation history</strong><p>Reason: {entry.reason}</p><p>By: {entry.cancelledBy} ({entry.cancelledByRole})</p><p>At: {new Date(entry.cancelledAt).toLocaleString()}</p><p>Refund: {currency(entry.refundAmount)} · {entry.refundStatus}</p></div>)}
-          {refundAdjustments.filter((entry) => entry.bookingId === selected.id).map((entry) => <div key={entry.id} className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Refund {currency(entry.amount)} · {entry.status}</div>)}
-          <p className="pt-1 text-[10px] text-slate-400">Demo only. No actual payment or refund is processed.</p>
-        </div>
-      </Modal>}
-      {paymentForm && <RecordForm title={`Record payment · ${paymentForm.id}`} onClose={() => setPaymentForm(null)} fields={[{ name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true }]} onSave={(values) => { const amount = Math.min(Number(values.amount), paymentForm.pending); updateRecord('bookings', paymentForm.id, { paid: paymentForm.paid + amount, pending: paymentForm.pending - amount }); setPaymentForm(null) }} saveLabel="Record in demo" />}
+      {selected && (
+        <DetailDialog
+          title={`Booking ${selected.id}`}
+          onClose={() => setSelected(null)}
+          record={selected}
+          rows={[
+            ...(selected.advancePaymentError ? [['Advance payment warning', <span className="text-rose-700">{selected.advancePaymentError} — use Record Payment to retry.</span>]] : []),
+            ['Timeline', <span>Created: {selected.created_at || 'Not recorded'}<br />Handover: {selected.handoverAt || 'Not recorded'}<br />Returned: {selected.returnedAt || 'Not recorded'}<br />Completed: {selected.completedAt || 'Not recorded'}</span>],
+            ['Additional charges', (selected.additionalCharges || []).length ? (selected.additionalCharges || []).map((charge, index) => <span key={index} className="block">{currency(charge.amount)} · {charge.reason} ({charge.type})</span>) : 'None'],
+            ...Object.entries(selected).map(([key, value]) => [
+              key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
+              ['paid', 'pending', 'outstanding', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
+            ]),
+            ['Payment Status', selected.payment_status || (Number(selected.paid) >= Number(selected.total_amount) && Number(selected.total_amount) > 0 ? 'Paid' : Number(selected.paid) > 0 ? 'Partially Paid' : 'Unpaid')],
+            ['Payment Transactions', (selected.payment_details?.transactions || []).length > 0 ? (
+              <div className="mt-1 space-y-1.5">
+                {selected.payment_details.transactions.map((tx, idx) => (
+                  <div key={idx} className="rounded-md bg-slate-50 p-2 text-xs text-slate-700">
+                    <span className="font-semibold text-emerald-800">{tx.id || `TX-${idx+1}`}</span> · {currency(tx.amount)} via {tx.method} ({tx.date?.substring(0, 10) || 'Date N/A'})
+                    {tx.transaction_reference && <span className="block text-slate-400">Ref: {tx.transaction_reference}</span>}
+                    {tx.notes && <span className="block italic text-slate-500">Note: {tx.notes}</span>}
+                  </div>
+                ))}
+              </div>
+            ) : 'No transactions recorded yet'],
+          ]}
+        />
+      )}
+      {paymentModalBooking && (
+        <RecordPaymentModal
+          isOpen={!!paymentModalBooking}
+          booking={paymentModalBooking}
+          onClose={() => setPaymentModalBooking(null)}
+          onSuccess={async () => {
+            await syncLifecycleData()
+          }}
+        />
+      )}
+      <BookingLifecycleDialog
+        action={lifecycleAction}
+        booking={lifecycleBooking}
+        onClose={() => { setLifecycleAction(null); setLifecycleBooking(null) }}
+        onSuccess={syncLifecycleData}
+      />
     </div>
   )
 }
@@ -1298,7 +1409,7 @@ function Documents() {
 }
 
 function Maintenance() {
-  const { maintenance, vehicles = [], addRecord, updateRecord, syncMaintenance, syncVehicles } = useDemoData()
+  const { maintenance, vehicles = [], syncMaintenance, syncVehicles } = useDemoData()
   const [tab, setTab] = useState('All')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -1362,15 +1473,13 @@ function Maintenance() {
             <div className="flex gap-1">
               <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>History</Button>
               {row.status === 'Ongoing' && (
+                // FIX: Complete maintenance via backend and refresh live vehicle state instead of local mutation
                 <Button variant="quiet" className="min-h-8 px-2.5 text-emerald-700 hover:bg-emerald-50" onClick={async () => {
                   try {
                     await maintenanceService.completeMaintenance(row.id)
                     if (syncMaintenance) await syncMaintenance()
                     if (syncVehicles) await syncVehicles({ force: true })
-                    else updateRecord('maintenance', row.id, { status: 'Completed' })
-                  } catch {
-                    updateRecord('maintenance', row.id, { status: 'Completed' })
-                  }
+                  } catch {}
                 }}>
                   Complete
                 </Button>
@@ -1397,6 +1506,7 @@ function Maintenance() {
             { name: 'cost', label: 'Estimated cost (₹)', type: 'number', min: 0, required: true },
             { name: 'payment', label: 'Payment status', type: 'select', options: ['Pending', 'Paid'], required: true },
           ]}
+          // FIX: Persist maintenance to backend and sync vehicle operational state
           onSave={async (values) => {
             try {
               await maintenanceService.createMaintenance({
@@ -1409,14 +1519,7 @@ function Maintenance() {
               })
               if (syncMaintenance) await syncMaintenance()
               if (syncVehicles) await syncVehicles({ force: true })
-            } catch {
-              addRecord('maintenance', {
-                ...values,
-                id: nextId('MT', maintenance),
-                cost: Number(values.cost),
-                status: 'Ongoing',
-              })
-            }
+            } catch {}
             setShowForm(false)
           }}
         />
@@ -1637,7 +1740,9 @@ function Reports() {
   const totalPending =
     backendReports?.summary?.total_pending ??
     bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
-  const rentedVehiclesCount = vehicles.filter((v) => v.availability === 'Rented').length
+  // FIX: Resolve vehicle operational availability from fleetAvailability or availability
+  const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
+  const rentedVehiclesCount = vehicles.filter((v) => vehicleState(v) === 'Rented').length
   const fleetUtil =
     backendReports?.summary?.fleet_utilization ??
     (vehicles.length > 0 ? Math.round((rentedVehiclesCount / vehicles.length) * 100) : 0)
@@ -1648,7 +1753,7 @@ function Reports() {
     const t = v.type || 'Other'
     if (!typeMap[t]) typeMap[t] = { total: 0, rented: 0 }
     typeMap[t].total += 1
-    if (v.availability === 'Rented') typeMap[t].rented += 1
+    if (vehicleState(v) === 'Rented') typeMap[t].rented += 1
   })
   const utilizationByType =
     backendReports?.utilization_by_type?.length > 0
