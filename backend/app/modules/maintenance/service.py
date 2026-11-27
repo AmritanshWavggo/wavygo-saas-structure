@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+import logging
 import time
 from typing import Optional, List, Dict, Any
+from fastapi import HTTPException, status
+from pymongo import ReturnDocument
 
 from app.db.mongodb import get_database
 from app.modules.maintenance.schemas import (
@@ -13,11 +16,14 @@ from app.modules.maintenance.schemas import (
     VehicleReviewStatusUpdate,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class MaintenanceService:
     def __init__(self):
         # In-memory store fallback when MongoDB is unavailable (local dev & tests)
         self._memory_maintenance: Dict[str, Dict[str, Any]] = {}
+        self._transactions_supported: Optional[bool] = None
         self._seed_default_maintenance()
 
     def _get_db(self):
@@ -25,6 +31,33 @@ class MaintenanceService:
             return get_database()
         except Exception:
             return None
+
+    # FIX: Detect replica set / mongos capability to decide between multi-doc transactions or guarded CAS fallback
+    def _use_transactions(self, db) -> bool:
+        """Detect transaction capability once; standalone Mongo uses the guarded fallback."""
+        if self._transactions_supported is None:
+            try:
+                hello = db.client.admin.command("hello")
+                self._transactions_supported = bool(hello.get("setName") or hello.get("msg") == "isdbgrid")
+            except Exception:
+                self._transactions_supported = False
+            logger.info(
+                "Maintenance state transition mode: %s",
+                "transaction" if self._transactions_supported else "guarded atomic fallback",
+            )
+        return self._transactions_supported
+
+    # FIX: Overlap check between maintenance schedule and rental booking dates
+    @staticmethod
+    def _maintenance_overlaps_booking(payload: MaintenanceCreate, booking: dict[str, Any]) -> bool:
+        rental = booking.get("rental_details") or {}
+        try:
+            return max(date.fromisoformat(payload.start), date.fromisoformat(rental["start_date"])) <= min(
+                date.fromisoformat(payload.expected or payload.start), date.fromisoformat(rental["end_date"])
+            )
+        except (KeyError, TypeError, ValueError):
+            # Old bookings without a usable range are conservatively treated as conflicts.
+            return True
 
     def _seed_default_maintenance(self):
         initial = [
@@ -104,31 +137,25 @@ class MaintenanceService:
         for item in initial:
             self._memory_maintenance[item["id"]] = item
 
-    def _update_vehicle_availability_internal(self, vehicle_id_or_name: str, availability: str):
-        """Update vehicle availability in MongoDB and memory."""
+    # FIX: Centralized helper to update operational availability (availability & fleetAvailability), with optional guard against overriding Rented vehicles
+    def set_vehicle_operational_state(self, vehicle_id_or_name: str, availability: str, tenant_id: Optional[str] = None, require_not_rented: bool = False):
+        """The sole maintenance-module writer for both operational availability fields."""
         db = self._get_db()
         if db is not None:
-            try:
-                # Try finding by id, _id, or makeModel / name
-                db["vehicles"].update_many(
-                    {
-                        "$or": [
-                            {"id": vehicle_id_or_name},
-                            {"_id": vehicle_id_or_name},
-                            {"makeModel": vehicle_id_or_name},
-                            {"name": vehicle_id_or_name},
-                        ]
-                    },
-                    {
-                        "$set": {
-                            "fleetAvailability": availability,
-                            "availability": availability,
-                            "updatedAt": datetime.now(timezone.utc).isoformat(),
-                        }
-                    },
-                )
-            except Exception:
-                pass
+            filt: dict[str, Any] = {"$or": [{"id": vehicle_id_or_name}, {"_id": vehicle_id_or_name}, {"makeModel": vehicle_id_or_name}, {"name": vehicle_id_or_name}]}
+            if tenant_id:
+                filt = {"$and": [filt, {"$or": [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
+            # FIX: Ensure a vehicle with an active rental is never silently overridden
+            if require_not_rented:
+                filt = {"$and": [filt, {"availability": {"$ne": "Rented"}}, {"fleetAvailability": {"$ne": "Rented"}}]}
+            previous = db["vehicles"].find_one_and_update(filt, {"$set": {"fleetAvailability": availability, "availability": availability, "updatedAt": datetime.now(timezone.utc).isoformat()}}, return_document=ReturnDocument.BEFORE)
+            if require_not_rented and not previous:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Vehicle has an active rental.")
+            return previous
+        return None
+
+    def _update_vehicle_availability_internal(self, vehicle_id_or_name: str, availability: str):
+        return self.set_vehicle_operational_state(vehicle_id_or_name, availability)
 
     def create_maintenance(self, payload: MaintenanceCreate, tenant_id: Optional[str] = None) -> MaintenanceResponse:
         now_dt = datetime.now(timezone.utc)
@@ -171,15 +198,35 @@ class MaintenanceService:
 
         # 1. Update vehicle status to "Maintenance"
         vehicle_identifier = payload.vehicle_id or payload.vehicle
-        self._update_vehicle_availability_internal(vehicle_identifier, "Maintenance")
-
-        # 2. Persist in Mongo
         db = self._get_db()
+        previous_vehicle = None
         if db is not None:
+            # The fallback remains safe on standalone MongoDB: the state claim is
+            # a guarded find_one_and_update and is compensated if insert fails.
+            # A transactional implementation is intentionally deferred until all
+            # maintenance writes can share a session.
+            self._use_transactions(db)
+            # FIX: Check for active rental before sending vehicle to maintenance
+            active = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"$or": [{"vehicle_details.id": vehicle_identifier}, {"vehicle": payload.vehicle}]}]})
+            if active:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Vehicle has an active rental")
+            # FIX: Check for overlapping confirmed or upcoming bookings
+            candidates = db["bookings"].find({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Confirmed", "Upcoming"]}}, {"$or": [{"vehicle_details.id": vehicle_identifier}, {"vehicle": payload.vehicle}]}]})
+            conflicts = [item for item in candidates if self._maintenance_overlaps_booking(payload, item)]
+            if conflicts:
+                # FIX: use double quotes inside nested f-string for Python < 3.12 compatibility
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Maintenance conflicts with bookings: " + ", ".join(f'{item.get("id")} ({item.get("dates")})' for item in conflicts))
+            # FIX: Transition vehicle operational availability to Maintenance, requiring vehicle is not currently rented
+            previous_vehicle = self.set_vehicle_operational_state(vehicle_identifier, "Maintenance", tenant_id=tenant_id, require_not_rented=True)
             try:
                 db["maintenance"].replace_one({"id": m_id}, {**record, "_id": m_id}, upsert=True)
             except Exception:
-                pass
+                if previous_vehicle:
+                    db["vehicles"].update_one({"_id": previous_vehicle["_id"]}, {"$set": {"availability": previous_vehicle.get("availability"), "fleetAvailability": previous_vehicle.get("fleetAvailability")}})
+                raise
+        else:
+            # FIX: Set operational state to Maintenance in memory fallback
+            self.set_vehicle_operational_state(vehicle_identifier, "Maintenance")
 
         try:
             from app.modules.notifications.service import create_notification
@@ -313,9 +360,10 @@ class MaintenanceService:
             update_dict["payment"] = payload.payment
         if payload.status is not None:
             update_dict["status"] = payload.status
-            # If changed to Completed, release vehicle back to Available
             if payload.status == "Completed":
-                self._update_vehicle_availability_internal(existing.vehicle_id or existing.vehicle, "Available")
+                db_for_state = self._get_db()
+                active = db_for_state and db_for_state["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"$or": [{"vehicle_details.id": existing.vehicle_id}, {"vehicle": existing.vehicle}]}]})
+                self.set_vehicle_operational_state(existing.vehicle_id or existing.vehicle, "Rented" if active else "Available", tenant_id=tenant_id)
                 try:
                     from app.modules.notifications.service import create_notification
                     m_tenant = tenant_id or getattr(existing, "tenant_id", None) or getattr(existing, "vendor_id", None)
@@ -355,11 +403,11 @@ class MaintenanceService:
         if not existing:
             return None
 
+        db = self._get_db()
+        raw = db and db["maintenance"].find_one({"$or": [{"id": maintenance_id}, {"_id": maintenance_id}]})
+        tenant_id = str(raw.get("tenant_id") or raw.get("vendor_id")) if raw and (raw.get("tenant_id") or raw.get("vendor_id")) else None
         update_payload = MaintenanceUpdate(status="Completed")
-        res = self.update_maintenance(maintenance_id, update_payload)
-
-        if return_to_available:
-            self._update_vehicle_availability_internal(existing.vehicle_id or existing.vehicle, "Available")
+        res = self.update_maintenance(maintenance_id, update_payload, tenant_id=tenant_id)
 
         return res
 

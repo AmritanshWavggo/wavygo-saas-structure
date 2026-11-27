@@ -107,6 +107,19 @@ def _get_bookings_col(db=None):
     return db[_BOOKINGS_COLLECTION]
 
 
+# FIX: Access maintenance collection to verify open jobs before vehicle state mutations
+def _get_maintenance_col(db=None):
+    """Return the maintenance collection.  Raises 503 if DB is unavailable."""
+    if db is None:
+        db = get_database()
+    if db is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database is not available.",
+        )
+    return db["maintenance"]
+
+
 def _parse_object_id(vehicle_id: str) -> Any:
     """Parse a string into ObjectId if valid, else return the vehicle_id string."""
     try:
@@ -152,6 +165,29 @@ def _vehicle_query(vehicle_id: str, tenant: Any = None) -> dict[str, Any]:
             ]
         }
     return base_query
+
+
+# FIX: Guard against manual Available/Rented state changes that would bypass an open maintenance or rental workflow
+def _operational_state_change_is_blocked(existing: dict[str, Any], tenant: Any) -> bool:
+    """Whether a manual Available/Rented state change would bypass an open workflow."""
+    tenant_id = _extract_tenant_id(tenant)
+    vehicle_id = str(existing.get("id") or existing.get("_id"))
+    vehicle_name = existing.get("name") or existing.get("makeModel")
+    tenant_filter = {"$or": [{"tenant_id": tenant_id}, {"tenantId": tenant_id}, {"vendor_id": tenant_id}]}
+    vehicle_filter = {"$or": [{"vehicle_id": vehicle_id}, {"vehicle": vehicle_name}]}
+    open_maintenance = _get_maintenance_col().find_one(
+        {"$and": [tenant_filter, vehicle_filter, {"status": {"$nin": ["Completed", "Cancelled"]}}]}
+    )
+    active_booking = _get_bookings_col().find_one(
+        {
+            "$and": [
+                tenant_filter,
+                {"status": {"$in": ["Active", "Returned"]}},
+                {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": vehicle_name}, {"vehicleId": vehicle_id}]},
+            ]
+        }
+    )
+    return bool(open_maintenance or active_booking)
 
 
 def _doc_to_response(doc: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -860,7 +896,15 @@ def update_vehicle(
 
     fleet_avail_enum = _check_enum(fleet_availability, FleetAvailability, "fleetAvailability")
     if fleet_avail_enum is not None:
+        # FIX: Forbid manual change to Available/Rented if vehicle is under maintenance or active rental
+        if fleet_avail_enum.value in ("Available", "Rented") and _operational_state_change_is_blocked(existing, tenant):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Vehicle availability cannot be changed while maintenance or an active rental is open.",
+            )
+        # FIX: Keep fleetAvailability and availability in sync
         set_doc["fleetAvailability"] = fleet_avail_enum.value
+        set_doc["availability"] = fleet_avail_enum.value
 
     # dailyRate + price must move together (rule 1)
     if daily_rate is not None:

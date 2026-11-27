@@ -57,12 +57,15 @@ function VehicleCardImage({ vehicle, className }) {
   )
 }
 
+// Declared at module level on purpose. Defining it inside AddBooking() creates a new
+// component type every render, which remounts the input and loses focus on each keystroke.
 function BookingField({ label, name, value, onChange, error, placeholder, type = 'text', required = false, ...props }) {
   return (
     <label className="block">
       <span className="mb-1.5 block text-sm font-semibold text-slate-700">
         {label}{required && <span className="ml-1 text-rose-500">*</span>}
       </span>
+      {/* Always a string, so the input never flips between controlled and uncontrolled. */}
       <input
         type={type}
         value={value ?? ''}
@@ -75,6 +78,7 @@ function BookingField({ label, name, value, onChange, error, placeholder, type =
     </label>
   )
 }
+const Field = BookingField
 
 function AddBooking() {
   const navigate = useNavigate()
@@ -103,6 +107,7 @@ function AddBooking() {
     method: 'Cash',
     deposit: false,
     paidAmount: '0',
+    transactionReference: '',
   })
   const [errors, setErrors] = useState({})
   const [confirmation, setConfirmation] = useState(null)
@@ -305,6 +310,7 @@ function AddBooking() {
       }
       if (!rental.pickupLocation.trim()) nextErrors.pickupLocation = 'Add a pickup location.'
     }
+    if (step === 3 && Number(payment.paidAmount) > 0 && payment.method !== 'Cash' && !payment.transactionReference.trim()) nextErrors.transactionReference = 'Transaction reference is required for non-Cash advances.'
     setErrors(nextErrors)
     return Object.keys(nextErrors).length === 0
   }
@@ -356,6 +362,7 @@ function AddBooking() {
         method: payment.method || 'Cash',
         deposit: Boolean(payment.deposit),
         paid_amount: initialPaid,
+        transaction_reference: payment.transactionReference.trim() || undefined,
       },
       notes: rental.notes?.trim() || undefined,
     }
@@ -373,7 +380,7 @@ function AddBooking() {
           vehicle: result.vehicle,
           dates: result.dates,
           type: result.type || 'Offline',
-          status: result.status || 'Active',
+          status: result.status || 'Confirmed',
           paid: result.paid,
           pending: result.pending,
           base_amount: result.base_amount,
@@ -436,7 +443,7 @@ function AddBooking() {
       vehicle: selectedVehicle.name,
       dates,
       type: 'Offline',
-      status: 'Active',
+      status: 'Confirmed',
       paid: initialPaid,
       pending: pendingAmount,
       total_amount: totalAmount,
@@ -910,6 +917,13 @@ function AddBooking() {
                     Full payment (₹{totalAmount})
                   </button>
                 </div>
+                {payment.method !== 'Cash' && Number(payment.paidAmount) > 0 && (
+                  <label className="block">
+                    <span className="mb-1.5 block text-sm font-semibold text-slate-700">Transaction reference *</span>
+                    <input value={payment.transactionReference} onChange={(e) => setPayment((current) => ({ ...current, transactionReference: e.target.value }))} className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3.5 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-3 focus:ring-emerald-100" placeholder="UPI reference, UTR, or card reference" />
+                    {errors.transactionReference && <span className="mt-1 block text-xs text-rose-600">{errors.transactionReference}</span>}
+                  </label>
+                )}
               </div>
 
               <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 p-4 hover:border-emerald-200">

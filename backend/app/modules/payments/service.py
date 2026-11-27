@@ -274,6 +274,7 @@ class PaymentService:
             ]
         }
 
+        updated_booking = None
         try:
             with mongo_transaction(self._get_client()) as session:
                 updated_booking = db["bookings"].find_one_and_update(
@@ -373,6 +374,18 @@ class PaymentService:
         except HTTPException:
             raise
         except PyMongoError as exc:
+            if updated_booking and "_id" in updated_booking:
+                try:
+                    db["bookings"].update_one(
+                        {"_id": updated_booking["_id"]},
+                        {
+                            "$inc": {"paid": -payment_amount_inr, "pending": payment_amount_inr},
+                            "$set": {"updated_at": now_str},
+                            "$pull": {"payment_details.transactions": {"id": tx_id}},
+                        },
+                    )
+                except Exception:
+                    pass
             logger.error("Failed to insert payment record: %s", exc)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -33,9 +33,10 @@ const demoRoles = ['Admin', 'Founder', 'Manager', 'Employee', 'Intern']
 function Topbar({ onOpenMobileSidebar }) {
   const [menu, setMenu] = useState('')
   const [query, setQuery] = useState('')
-  const [profile, setProfile] = useState(null)
+  // Restored from the pre-rewrite Topbar: the business select and the notification dot read these, so rendering threw without them.
   const [vendor, setVendor] = useState('WavyGo Mobility')
   const [notificationsRead, setNotificationsRead] = useState(false)
+  const [profile, setProfile] = useState(null)
   const headerRef = useRef(null)
   const navigate = useNavigate()
   const demoData = useDemoData() || {}

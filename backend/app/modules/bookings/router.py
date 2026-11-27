@@ -11,6 +11,8 @@ from app.modules.bookings.schemas import (
     OfflineBookingUpdate,
     OfflineBookingResponse,
     PaymentRecordCreate,
+    LifecycleActionRequest,
+    ReturnBookingRequest,
 )
 from app.modules.bookings.service import booking_service
 
@@ -43,6 +45,8 @@ def create_offline_booking(payload: OfflineBookingCreate, request: Request) -> O
     try:
         tenant_id = _get_tenant_id(request)
         return booking_service.create_offline_booking(payload, tenant_id=tenant_id)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -92,6 +96,15 @@ def get_offline_booking(booking_id: str, request: Request) -> OfflineBookingResp
 )
 def update_offline_booking(booking_id: str, payload: OfflineBookingUpdate, request: Request) -> OfflineBookingResponse:
     tenant_id = _get_tenant_id(request)
+    if payload.status in {"Confirmed", "Active", "Returned", "Completed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Lifecycle statuses must use the handover, return, or complete lifecycle endpoints.",
+        )
+    if payload.status == "Cancelled":
+        if not tenant_id:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required to cancel a booking.")
+        return booking_service.cancel_booking(booking_id, tenant_id)
     updated = booking_service.update_booking(booking_id, payload, tenant_id=tenant_id)
     if not updated:
         raise HTTPException(
@@ -99,6 +112,33 @@ def update_offline_booking(booking_id: str, payload: OfflineBookingUpdate, reque
             detail=f"Booking with ID '{booking_id}' not found.",
         )
     return updated
+
+
+@router.post("/offline/{booking_id}/handover", response_model=OfflineBookingResponse)
+def handover_offline_booking(
+    booking_id: str,
+    payload: LifecycleActionRequest,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> OfflineBookingResponse:
+    return booking_service.handover_booking(booking_id, payload, str(vendor["_id"]))
+
+
+@router.post("/offline/{booking_id}/return", response_model=OfflineBookingResponse)
+def return_offline_booking(
+    booking_id: str,
+    payload: ReturnBookingRequest,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> OfflineBookingResponse:
+    return booking_service.return_booking(booking_id, payload, str(vendor["_id"]))
+
+
+@router.post("/offline/{booking_id}/complete", response_model=OfflineBookingResponse)
+def complete_offline_booking(
+    booking_id: str,
+    payload: LifecycleActionRequest,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> OfflineBookingResponse:
+    return booking_service.complete_booking(booking_id, payload, str(vendor["_id"]))
 
 
 @router.post(

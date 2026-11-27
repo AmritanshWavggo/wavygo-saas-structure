@@ -42,6 +42,8 @@ import { financeService } from '../services/financeService.js'
 import { reportService } from '../services/reportService.js'
 import { staffService } from '../services/staffService.js'
 import { vehicleService } from '../services/vehicleService.js'
+import { RecordPaymentModal } from '../components/RecordPaymentModal.jsx'
+import { BookingLifecycleDialog } from '../components/BookingLifecycleDialogs.jsx'
 import {
   BarChart,
   Button,
@@ -57,6 +59,24 @@ import {
   StatusBadge,
   Tabs,
 } from '../components/ui/Workspace.jsx'
+
+function PaymentStatusBadge({ status }) {
+  const styles = {
+    Paid: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20',
+    'Partially Paid': 'bg-amber-50 text-amber-700 ring-amber-600/20',
+    Unpaid: 'bg-rose-50 text-rose-700 ring-rose-600/20',
+  }
+  const cls = styles[status] || 'bg-slate-100 text-slate-700 ring-slate-500/20'
+  return (
+    <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${cls}`}>
+      {status || 'Unpaid'}
+    </span>
+  )
+}
+
+function BookingStatusBadge({ status }) {
+  return <StatusBadge status={status === 'Active' ? 'Rented' : status} />
+}
 
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
@@ -1303,12 +1323,16 @@ function ReturnBikeModal({ booking, onClose, onCompleted }) {
 }
 
 function Bookings() {
-  const { bookings, updateRecord, syncOfflineBookings, syncPayments, syncVehicles } = useDemoData()
+  const { bookings, vehicles, customers, currentDemoUser, updateRecord, createDemoBooking, cancelDemoBooking, syncOfflineBookings, syncPayments, syncCustomers, syncVehicles } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
-  const [paymentForm, setPaymentForm] = useState(null)
-  const [returnBooking, setReturnBooking] = useState(null)
+  const [paymentModalBooking, setPaymentModalBooking] = useState(null)
+  const [lifecycleBooking, setLifecycleBooking] = useState(null)
+  const [lifecycleAction, setLifecycleAction] = useState(null)
+  const [showBookingForm, setShowBookingForm] = useState(false)
+  const [cancelForm, setCancelForm] = useState(null)
+  const [formError, setFormError] = useState('')
   const [notice, setNotice] = useState('')
   const [isSyncing, setIsSyncing] = useState(false)
 
@@ -1318,9 +1342,9 @@ function Bookings() {
 
   const online = bookings.filter((item) => item.type === 'Online').length
   const offline = bookings.filter((item) => item.type === 'Offline').length
-  const revenue = bookings.reduce((sum, item) => sum + item.paid, 0)
-  const pending = bookings.reduce((sum, item) => sum + item.pending, 0)
-  const tabs = ['All', 'Online', 'Offline', 'Active', 'Completed', 'Cancelled']
+  const revenue = bookings.reduce((sum, item) => sum + Number(item.paid || 0), 0)
+  const pending = bookings.reduce((sum, item) => sum + Number(item.pending || 0), 0)
+  const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Returned', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
     // The shared tab control intentionally matches either booking channel or booking status.
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
@@ -1337,6 +1361,13 @@ function Bookings() {
     } finally {
       setIsSyncing(false)
     }
+  }
+
+  async function syncLifecycleData() {
+    if (syncOfflineBookings) await syncOfflineBookings()
+    if (syncCustomers) await syncCustomers()
+    if (syncVehicles) await syncVehicles({ force: true })
+    if (syncPayments) await syncPayments()
   }
 
   return (
@@ -1402,35 +1433,50 @@ function Bookings() {
             { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
             { key: 'dates', label: 'Rental dates' },
             { key: 'type', label: 'Type', render: (row) => <span className="text-xs">{row.type}</span> },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            { key: 'status', label: 'Status', render: (row) => <BookingStatusBadge status={row.status} /> },
+            {
+              key: 'payment_status',
+              label: 'Payment',
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                return <PaymentStatusBadge status={pStatus} />
+              },
+            },
             { key: 'paid', label: 'Paid', render: (row) => currency(row.paid) },
-            { key: 'pending', label: 'Pending', render: (row) => currency(row.pending) },
+            {
+              key: 'outstanding',
+              label: 'Outstanding',
+              render: (row) => {
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                return currency(out)
+              },
+            },
             {
               key: 'actions',
               label: '',
-              render: (row) => (
-                <div className="flex items-center gap-1.5">
-                  {row.status === 'Active' && (
-                    <Button
-                      variant="secondary"
-                      className="min-h-8 px-2.5 text-xs font-semibold text-amber-800 border-amber-300 hover:bg-amber-50"
-                      onClick={() => setReturnBooking(row)}
-                      title="Return bike & end ride via OTP"
-                    >
-                      <RotateCcw size={13} className="mr-1 text-amber-700" />
-                      Return Bike
+              render: (row) => {
+                const pStatus = row.payment_status || (Number(row.paid) >= Number(row.total_amount) && Number(row.total_amount) > 0 ? 'Paid' : Number(row.paid) > 0 ? 'Partially Paid' : 'Unpaid')
+                const out = row.outstanding !== undefined ? Number(row.outstanding) : Math.max(0, Number(row.total_amount || 0) - Number(row.paid || 0))
+                const canPay = pStatus !== 'Paid' && out > 0 && row.status !== 'Cancelled'
+                const action = row.status === 'Confirmed' ? 'handover' : row.status === 'Active' ? 'return' : row.status === 'Returned' ? 'complete' : null
+                return (
+                  <div className="flex gap-1">
+                    <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
+                      <Eye size={15} />
                     </Button>
-                  )}
-                  <Button variant="quiet" className="min-h-8 px-2" aria-label={`View ${row.id}`} onClick={() => setSelected(row)}>
-                    <Eye size={15} />
-                  </Button>
-                  {row.pending > 0 && (
-                    <Button variant="quiet" className="min-h-8 px-2 text-xs" onClick={() => setPaymentForm(row)}>
-                      Record payment
-                    </Button>
-                  )}
-                </div>
-              ),
+                    {canPay && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => setPaymentModalBooking(row)}>
+                        Record payment
+                      </Button>
+                    )}
+                    {action && (
+                      <Button variant="quiet" className="min-h-8 px-2 text-emerald-700 font-medium" onClick={() => { setLifecycleBooking(row); setLifecycleAction(action) }}>
+                        {action === 'handover' ? 'Mark as Rented / Handover' : action === 'return' ? 'Mark as Returned' : 'Complete Booking'}
+                      </Button>
+                    )}
+                  </div>
+                )
+              },
             },
           ]}
         />
@@ -1438,66 +1484,50 @@ function Bookings() {
           Showing {filtered.length} bookings · Offline desk & online reservations
         </p>
       </Card>
-      {returnBooking && (
-        <ReturnBikeModal
-          booking={returnBooking}
-          onClose={() => setReturnBooking(null)}
-          onCompleted={async (bookingId) => {
-            updateRecord('bookings', bookingId, { status: 'Completed' })
-            const vehicleId = returnBooking.vehicle_details?.id || returnBooking.vehicleId || returnBooking.vehicle_id || returnBooking.vehicle
-            if (vehicleId) {
-              updateRecord('vehicles', vehicleId, { fleetAvailability: 'Under Review', availability: 'Under Review' })
-            }
-            if (syncOfflineBookings) await syncOfflineBookings()
-            if (syncVehicles) await syncVehicles()
-            setNotice(`Bike returned! Ride ended and ${returnBooking.vehicle || 'vehicle'} automatically moved to 'Under Review' for mechanic inspection.`)
-            setTimeout(() => setNotice(''), 4500)
-          }}
-        />
-      )}
       {selected && (
         <DetailDialog
           title={`Booking ${selected.id}`}
           onClose={() => setSelected(null)}
           record={selected}
-          rows={Object.entries(selected).map(([key, value]) => [
-            key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
-            ['paid', 'pending', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
-          ])}
-        />
-      )}
-      {paymentForm && (
-        <RecordForm
-          title={`Record payment · ${paymentForm.id}`}
-          onClose={() => setPaymentForm(null)}
-          fields={[
-            { name: 'amount', label: 'Payment amount (₹)', type: 'number', min: 1, required: true },
-            { name: 'method', label: 'Payment method', type: 'text', placeholder: 'Cash, UPI, or Card' },
+          rows={[
+            ...(selected.advancePaymentError ? [['Advance payment warning', <span className="text-rose-700">{selected.advancePaymentError} — use Record Payment to retry.</span>]] : []),
+            ['Timeline', <span>Created: {selected.created_at || 'Not recorded'}<br />Handover: {selected.handoverAt || 'Not recorded'}<br />Returned: {selected.returnedAt || 'Not recorded'}<br />Completed: {selected.completedAt || 'Not recorded'}</span>],
+            ['Additional charges', (selected.additionalCharges || []).length ? (selected.additionalCharges || []).map((charge, index) => <span key={index} className="block">{currency(charge.amount)} · {charge.reason} ({charge.type})</span>) : 'None'],
+            ...Object.entries(selected).map(([key, value]) => [
+              key.replace(/([A-Z])/g, ' $1').replace(/^./, (char) => char.toUpperCase()),
+              ['paid', 'pending', 'outstanding', 'total_amount', 'base_amount'].includes(key) ? currency(value) : (typeof value === 'object' ? JSON.stringify(value) : value),
+            ]),
+            ['Payment Status', selected.payment_status || (Number(selected.paid) >= Number(selected.total_amount) && Number(selected.total_amount) > 0 ? 'Paid' : Number(selected.paid) > 0 ? 'Partially Paid' : 'Unpaid')],
+            ['Payment Transactions', (selected.payment_details?.transactions || []).length > 0 ? (
+              <div className="mt-1 space-y-1.5">
+                {selected.payment_details.transactions.map((tx, idx) => (
+                  <div key={idx} className="rounded-md bg-slate-50 p-2 text-xs text-slate-700">
+                    <span className="font-semibold text-emerald-800">{tx.id || `TX-${idx+1}`}</span> · {currency(tx.amount)} via {tx.method} ({tx.date?.substring(0, 10) || 'Date N/A'})
+                    {tx.transaction_reference && <span className="block text-slate-400">Ref: {tx.transaction_reference}</span>}
+                    {tx.notes && <span className="block italic text-slate-500">Note: {tx.notes}</span>}
+                  </div>
+                ))}
+              </div>
+            ) : 'No transactions recorded yet'],
           ]}
-          onSave={async (values) => {
-            // A partial-payment entry cannot exceed the booking's remaining balance.
-            const amount = Math.min(Number(values.amount), paymentForm.pending)
-            const method = values.method?.trim() || 'Cash'
-            try {
-              await bookingService.recordPayment(paymentForm.id, {
-                amount,
-                method,
-                notes: `Desk collection via ${method}`,
-              })
-              if (syncOfflineBookings) await syncOfflineBookings()
-              if (syncPayments) await syncPayments()
-            } catch (err) {
-              console.warn('Backend payment sync fallback to local state:', err)
-              updateRecord('bookings', paymentForm.id, {
-                paid: paymentForm.paid + amount,
-                pending: paymentForm.pending - amount,
-              })
-            }
-            setPaymentForm(null)
-          }}
-          saveLabel="Record Payment"
         />
       )}
+      {paymentModalBooking && (
+        <RecordPaymentModal
+          isOpen={!!paymentModalBooking}
+          booking={paymentModalBooking}
+          onClose={() => setPaymentModalBooking(null)}
+          onSuccess={async () => {
+            await syncLifecycleData()
+          }}
+        />
+      )}
+      <BookingLifecycleDialog
+        action={lifecycleAction}
+        booking={lifecycleBooking}
+        onClose={() => { setLifecycleAction(null); setLifecycleBooking(null) }}
+        onSuccess={syncLifecycleData}
+      />
     </div>
   )
 }
@@ -3191,7 +3221,7 @@ function Documents() {
 }
 
 function Maintenance() {
-  const { maintenance, vehicles = [], addRecord, updateRecord, syncMaintenance, syncVehicles } = useDemoData()
+  const { maintenance, vehicles = [], syncMaintenance, syncVehicles } = useDemoData()
   const [tab, setTab] = useState('All')
   const [showForm, setShowForm] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -3255,11 +3285,12 @@ function Maintenance() {
             <div className="flex gap-1">
               <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>History</Button>
               {row.status === 'Ongoing' && (
+                // FIX: Complete maintenance via backend and refresh live vehicle state instead of local mutation
                 <Button variant="quiet" className="min-h-8 px-2.5 text-emerald-700 hover:bg-emerald-50" onClick={async () => {
                   try {
                     await maintenanceService.completeMaintenance(row.id)
                     if (syncMaintenance) await syncMaintenance()
-                    if (syncVehicles) await syncVehicles()
+                    if (syncVehicles) await syncVehicles({ force: true })
                     else updateRecord('maintenance', row.id, { status: 'Completed' })
                   } catch {
                     updateRecord('maintenance', row.id, { status: 'Completed' })
@@ -3290,6 +3321,7 @@ function Maintenance() {
             { name: 'cost', label: 'Estimated cost (₹)', type: 'number', min: 0, required: true },
             { name: 'payment', label: 'Payment status', type: 'select', options: ['Pending', 'Paid'], required: true },
           ]}
+          // FIX: Persist maintenance to backend and sync vehicle operational state
           onSave={async (values) => {
             try {
               await maintenanceService.createMaintenance({
@@ -3301,7 +3333,7 @@ function Maintenance() {
                 payment_status: values.payment,
               })
               if (syncMaintenance) await syncMaintenance()
-              if (syncVehicles) await syncVehicles()
+              if (syncVehicles) await syncVehicles({ force: true })
             } catch {
               addRecord('maintenance', {
                 ...values,
@@ -3989,7 +4021,9 @@ function Reports() {
   const totalPending =
     backendReports?.summary?.total_pending ??
     bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
-  const rentedVehiclesCount = vehicles.filter((v) => v.availability === 'Rented').length
+  // FIX: Resolve vehicle operational availability from fleetAvailability or availability
+  const vehicleState = (vehicle) => vehicle.fleetAvailability || vehicle.availability
+  const rentedVehiclesCount = vehicles.filter((v) => vehicleState(v) === 'Rented').length
   const fleetUtil =
     backendReports?.summary?.fleet_utilization ??
     (vehicles.length > 0 ? Math.round((rentedVehiclesCount / vehicles.length) * 100) : 0)
@@ -4000,7 +4034,7 @@ function Reports() {
     const t = v.type || 'Other'
     if (!typeMap[t]) typeMap[t] = { total: 0, rented: 0 }
     typeMap[t].total += 1
-    if (v.availability === 'Rented') typeMap[t].rented += 1
+    if (vehicleState(v) === 'Rented') typeMap[t].rented += 1
   })
   const utilizationByType =
     backendReports?.utilization_by_type?.length > 0

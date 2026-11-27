@@ -14,6 +14,13 @@ from app.db.mongodb import (
     get_database,
 )
 
+# Compatibility aliases for tests that patch index creation
+def ensure_vehicle_indexes() -> None:
+    pass
+
+def ensure_payment_indexes() -> None:
+    pass
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
