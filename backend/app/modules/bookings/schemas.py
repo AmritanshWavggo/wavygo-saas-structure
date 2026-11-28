@@ -1,8 +1,23 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field, field_validator
+
+
+class BookingSendOtpRequest(BaseModel):
+    phone: str = Field(..., min_length=7, max_length=25)
+    purpose: Literal["pickup", "return"] = "pickup"
+    booking_id: Optional[str] = None
+    vehicle_name: Optional[str] = None
+    customer_name: Optional[str] = None
+
+
+class BookingVerifyOtpRequest(BaseModel):
+    phone: str = Field(..., min_length=7, max_length=25)
+    purpose: Literal["pickup", "return"] = "pickup"
+    otp: str = Field(..., min_length=4, max_length=8)
+    booking_id: Optional[str] = None
 
 
 class VehicleInput(BaseModel):

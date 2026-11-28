@@ -10,7 +10,10 @@ from unittest.mock import patch
 from bson import ObjectId
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
-import mongomock
+try:
+    import mongomock
+except ImportError:
+    mongomock = None
 from pydantic import SecretStr
 from pymongo.errors import PyMongoError
 import pytest
@@ -56,6 +59,8 @@ def make_test_booking(booking_id: str, tenant_id: str, total: float = 5000.0, pa
 
 @pytest.fixture
 def mock_db():
+    if mongomock is None:
+        pytest.skip("mongomock is not installed")
     client = mongomock.MongoClient()
     db = client["wavygo_test"]
     # Create indexes

@@ -5,6 +5,8 @@ import {
 } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useDemoData } from '../../data/DemoDataContext.jsx'
+import { authService } from '../../services/authService.js'
+import { tenantService } from '../../services/tenantService.js'
 
 const destinations = [
   { label: 'Dashboard', to: '/app/dashboard' },
@@ -26,22 +28,30 @@ const createActions = [
   { label: 'Add a customer', to: '/app/customers?new=1', icon: UserRound },
 ]
 
-const demoRoles = ['Admin', 'Founder', 'Manager', 'Employee', 'Intern']
-
 function Topbar({ onOpenMobileSidebar }) {
   const [menu, setMenu] = useState('')
   const [query, setQuery] = useState('')
-  // Restored from the pre-rewrite Topbar: the business select and the notification dot read these, so rendering threw without them.
-  const [vendor, setVendor] = useState('WavyGo Mobility')
   const [notificationsRead, setNotificationsRead] = useState(false)
-  const [profile, setProfile] = useState(null)
   const headerRef = useRef(null)
   const navigate = useNavigate()
-  const { currentDemoUser, currentDemoRole, setCurrentDemoRole } = useDemoData()
+
+  const businessName =
+    (typeof localStorage !== 'undefined' && localStorage.getItem('wavygo-business-name')) ||
+    'WavyGo Fleet'
+  const ownerName =
+    (typeof localStorage !== 'undefined' && localStorage.getItem('wavygo-owner-name')) ||
+    (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('wavygo-user-email')) ||
+    'Vendor Partner'
   const matches = useMemo(
     () => destinations.filter((item) => item.label.toLowerCase().includes(query.toLowerCase())),
     [query],
   )
+
+  function goToSearchResult(item) {
+    setMenu('')
+    setQuery('')
+    navigate(item.to)
+  }
 
   useEffect(() => {
     function handlePointerDown(event) {
@@ -80,13 +90,12 @@ function Topbar({ onOpenMobileSidebar }) {
       </button>
 
       <div className="hidden items-center gap-2.5 border-r border-slate-100 pr-4 sm:flex">
-        <label className="flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5">
           <Building2 size={15} aria-hidden="true" className="shrink-0 text-emerald-800" />
-          <select aria-label="Select business" value={vendor} onChange={(event) => setVendor(event.target.value)} className="max-w-[146px] cursor-pointer truncate bg-transparent text-xs font-semibold text-slate-800 outline-none">
-            <option>WavyGo Mobility</option><option>Partner demo store</option>
-          </select>
-        </label>
-        <span className="hidden items-center gap-1 text-[11px] text-slate-400 lg:inline-flex"><MapPin size={13} aria-hidden="true" />Ahmedabad</span>
+          <span className="max-w-[170px] truncate text-xs font-semibold text-slate-800">
+            {businessName}
+          </span>
+        </div>
       </div>
 
       <div className="relative min-w-0 max-w-[390px] flex-1">
@@ -123,16 +132,39 @@ function Topbar({ onOpenMobileSidebar }) {
         {/* Profile Menu */}
         <div className="relative">
           <button type="button" aria-label="Open profile menu" aria-expanded={menu === 'profile'} onClick={() => setMenu(menu === 'profile' ? '' : 'profile')} className="flex items-center gap-2 rounded-xl p-1 hover:bg-slate-50">
-            <span className="grid size-8 place-items-center rounded-xl bg-[#D8F4E7] text-[10px] font-bold text-[#123B2D]">{currentDemoRole.slice(0, 2).toUpperCase()}</span>
-            <span className="hidden text-left sm:block"><span className="block text-[11px] font-semibold text-slate-800">{currentDemoUser.name}</span><span className="block text-[10px] text-slate-400">{currentDemoUser.role} · Demo role</span></span>
+            <span className="grid size-8 place-items-center rounded-xl bg-[#D8F4E7] text-[10px] font-bold text-[#123B2D]">
+              {(ownerName || 'VP').slice(0, 2).toUpperCase()}
+            </span>
+            <span className="hidden text-left sm:block">
+              <span className="block text-[11px] font-semibold text-slate-800">{ownerName}</span>
+              <span className="block text-[10px] text-slate-400">Vendor Account</span>
+            </span>
             <ChevronDown size={13} aria-hidden="true" className="hidden text-slate-400 sm:block" />
           </button>
-          {menu === 'profile' && <div className="absolute right-0 top-12 z-50 w-60 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
-            <div className="border-b border-slate-100 px-3 py-2.5"><p className="text-xs font-semibold text-slate-800">{currentDemoUser.name}</p><p className="mt-1 text-[10px] text-slate-400">Frontend-only demo session</p></div>
-            <div className="px-3 py-3"><label htmlFor="demo-role-select" className="mb-1.5 block text-[10px] font-semibold uppercase tracking-wide text-slate-500">Switch demo role</label><select id="demo-role-select" value={currentDemoRole} onChange={(event) => setCurrentDemoRole(event.target.value)} className="h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-800 outline-none focus:border-emerald-500">{demoRoles.map((role) => <option key={role} value={role}>{role}</option>)}</select><p className="mt-1.5 text-[10px] leading-4 text-slate-400">Only Admin can correct customer payment records.</p></div>
-            <Link to="/app/settings" onClick={() => setMenu('')} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs text-slate-600 hover:bg-slate-50"><Settings size={15} />Workspace settings</Link>
-            <button type="button" onClick={() => { sessionStorage.removeItem('wavygo-demo-access'); setMenu(''); navigate('/login') }} className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs text-slate-600 hover:bg-rose-50 hover:text-rose-700"><LogOut size={15} />Exit demo workspace</button>
-          </div>}
+          {menu === 'profile' && (
+            <div className="absolute right-0 top-12 z-50 w-60 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+              <div className="border-b border-slate-100 px-3 py-2.5">
+                <p className="text-xs font-semibold text-slate-800">{ownerName}</p>
+                <p className="mt-0.5 text-[10px] text-slate-400">{businessName}</p>
+              </div>
+              <Link to="/app/settings" onClick={() => setMenu('')} className="flex items-center gap-2.5 rounded-xl px-3 py-2.5 text-xs text-slate-600 hover:bg-slate-50">
+                <Settings size={15} />
+                Workspace settings
+              </Link>
+              <button
+                type="button"
+                onClick={() => {
+                  authService.logout()
+                  setMenu('')
+                  navigate('/login')
+                }}
+                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-xs font-medium text-rose-600 hover:bg-rose-50"
+              >
+                <LogOut size={15} />
+                Sign out
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </header>

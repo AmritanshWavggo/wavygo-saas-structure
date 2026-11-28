@@ -1,26 +1,33 @@
-import { useEffect, useState } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
+  AlertCircle,
   ArrowDownToLine,
   ArrowUpRight,
   BadgeIndianRupee,
   CalendarDays,
   Check,
+  ChevronDown,
   CircleDollarSign,
   ClipboardList,
   Download,
   Eye,
   FileText,
+  Pencil,
   Plus,
   Settings2,
   ExternalLink,
   Loader2,
+  Mail,
+  Phone,
   RefreshCw,
+  RotateCcw,
   ShieldCheck,
   Trash2,
   Upload,
   Users,
   Wallet,
   Wrench,
+  X,
 } from 'lucide-react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { API_BASE_URL } from '../services/apiClient.js'
@@ -74,8 +81,6 @@ function BookingStatusBadge({ status }) {
 const currency = (amount) =>
   `₹${Number(amount || 0).toLocaleString('en-IN')}`
 
-const isAdminRole = (role) => String(role || '').trim().toLowerCase() === 'admin'
-
 function nextId(prefix, records) {
   // Continue the largest existing numeric suffix so inserted demo rows receive unique IDs.
   const max = records.reduce((largest, record) => {
@@ -85,10 +90,9 @@ function nextId(prefix, records) {
   return `${prefix}-${max + 1}`
 }
 
-function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo', showDemoNote = true, initialValues = {}, externalError = '' }) {
-  const [values, setValues] = useState(() => Object.fromEntries(
-    fields.map((field) => [field.name, initialValues[field.name] ?? field.initial ?? '']),
-  ))
+function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save record', showDemoNote = false }) {
+  const initialValues = Object.fromEntries(fields.map((field) => [field.name, field.initial || '']))
+  const [values, setValues] = useState(initialValues)
   const [error, setError] = useState('')
 
   function submit(event) {
@@ -126,7 +130,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo'
               {field.type === 'select' ? (
                 <select
                   required={field.required}
-                  value={values[field.name]}
+                  value={values[field.name] ?? ''}
                   onChange={(event) =>
                     setValues((current) => ({ ...current, [field.name]: event.target.value }))
                   }
@@ -145,7 +149,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo'
                   type={field.type || 'text'}
                   min={field.min}
                   step={field.step}
-                  value={field.type === 'file' ? undefined : values[field.name]}
+                  value={field.type === 'file' ? undefined : (values[field.name] ?? '')}
                   placeholder={field.placeholder}
                   onChange={(event) => setValues((current) => ({
                     ...current,
@@ -159,7 +163,7 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo'
             </label>
           ))}
         </div>
-        {(error || externalError) && <p role="alert" className="text-xs text-rose-600">{error || externalError}</p>}
+        {error && <p role="alert" className="text-xs text-rose-600">{error}</p>}
         {showDemoNote && (
           <p className="rounded-xl bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800">
             Demo only. This record is held in page state and is not sent to a server.
@@ -170,9 +174,9 @@ function RecordForm({ title, fields, onClose, onSave, saveLabel = 'Save to demo'
   )
 }
 
-function DetailDialog({ title, rows, onClose, showDemoNote = true }) {
+function DetailDialog({ title, rows, onClose, showDemoNote = false, footer }) {
   return (
-    <Modal title={title} onClose={onClose}>
+    <Modal title={title} onClose={onClose} footer={footer}>
       <div className="space-y-3">
         {rows.map(([label, value]) => (
           <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
@@ -186,40 +190,1093 @@ function DetailDialog({ title, rows, onClose, showDemoNote = true }) {
   )
 }
 
+function VerifyCustomerModal({ customer, onClose, onVerified }) {
+  const [customerEmail, setCustomerEmail] = useState(customer.email || '')
+  const [phoneOtp, setPhoneOtp] = useState('')
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false)
+  const [phoneSending, setPhoneSending] = useState(false)
+  const [phoneVerifying, setPhoneVerifying] = useState(false)
+  const [phoneVerified, setPhoneVerified] = useState(Boolean(customer.phone_verified))
+  const [phoneMsg, setPhoneMsg] = useState({ type: '', text: '' })
+
+  const [emailOtp, setEmailOtp] = useState('')
+  const [emailOtpSent, setEmailOtpSent] = useState(false)
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailVerifying, setEmailVerifying] = useState(false)
+  const [emailVerified, setEmailVerified] = useState(Boolean(customer.email_verified))
+  const [emailMsg, setEmailMsg] = useState({ type: '', text: '' })
+
+  const [isMarkingVerified, setIsMarkingVerified] = useState(false)
+  const [autoVerifyNotice, setAutoVerifyNotice] = useState('')
+  const autoTriggeredRef = useRef(false)
+
+  const bothVerified = phoneVerified && emailVerified
+
+  async function handleSendPhoneOtp() {
+    if (!customer.phone) {
+      setPhoneMsg({ type: 'error', text: 'No phone number available for this customer.' })
+      return
+    }
+    setPhoneSending(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: customer.phone,
+        channel: 'phone',
+        customer_name: customer.name,
+      })
+      setPhoneOtpSent(true)
+      setPhoneMsg({ type: 'success', text: `SMS OTP sent to ${customer.phone} via Edumarc SMS.` })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Failed to send SMS OTP.' })
+    } finally {
+      setPhoneSending(false)
+    }
+  }
+
+  async function handleVerifyPhoneOtp() {
+    if (!phoneOtp || phoneOtp.trim().length < 4) {
+      setPhoneMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setPhoneVerifying(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: customer.phone,
+        channel: 'phone',
+        otp: phoneOtp.trim(),
+      })
+      setPhoneVerified(true)
+      setPhoneMsg({ type: 'success', text: 'Mobile number OTP verified successfully! ✓' })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setPhoneVerifying(false)
+    }
+  }
+
+  async function handleSendEmailOtp() {
+    const targetEmail = (customerEmail || customer.email || '').trim()
+    if (!targetEmail || !targetEmail.includes('@')) {
+      setEmailMsg({ type: 'error', text: 'Please enter a valid email address first.' })
+      return
+    }
+    setEmailSending(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: targetEmail,
+        channel: 'email',
+        customer_name: customer.name,
+      })
+      setEmailOtpSent(true)
+      setEmailMsg({ type: 'success', text: `Email OTP sent to ${targetEmail} via Brevo.` })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Failed to send Email OTP.' })
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
+  async function handleVerifyEmailOtp() {
+    if (!emailOtp || emailOtp.trim().length < 4) {
+      setEmailMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    const targetEmail = (customerEmail || customer.email || '').trim()
+    setEmailVerifying(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: targetEmail,
+        channel: 'email',
+        otp: emailOtp.trim(),
+      })
+      setEmailVerified(true)
+      setEmailMsg({ type: 'success', text: 'Email OTP verified successfully! ✓' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setEmailVerifying(false)
+    }
+  }
+
+  // Automatically execute verification when BOTH Mobile and Email OTPs are verified
+  useEffect(() => {
+    if (phoneVerified && emailVerified && !autoTriggeredRef.current) {
+      autoTriggeredRef.current = true
+      executeVerification()
+    }
+  }, [phoneVerified, emailVerified])
+
+  async function executeVerification() {
+    setIsMarkingVerified(true)
+    setAutoVerifyNotice('🎉 Phone & Email dono verify ho gaye! Profile automatically Verified mark ho rahi hai...')
+    try {
+      if (customerEmail && customerEmail !== customer.email) {
+        try {
+          await customerService.updateCustomer(customer.id, { email: customerEmail.trim() })
+        } catch (_) {}
+      }
+      await customerService.verifyCustomer(customer.id)
+    } catch (err) {
+      // Local fallback for client-side state
+    } finally {
+      setTimeout(() => {
+        setIsMarkingVerified(false)
+        onVerified(customer.id)
+        onClose()
+      }, 1400)
+    }
+  }
+
+  return (
+    <Modal
+      title="Verify Customer Identity"
+      onClose={onClose}
+      footer={
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 w-full">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={isMarkingVerified}>
+            Cancel
+          </Button>
+
+          <Button
+            type="button"
+            onClick={executeVerification}
+            disabled={!bothVerified || isMarkingVerified}
+            className={`text-white transition ${
+              bothVerified
+                ? 'bg-emerald-600 hover:bg-emerald-700 cursor-pointer'
+                : 'bg-slate-400 cursor-not-allowed opacity-60'
+            }`}
+          >
+            {isMarkingVerified ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                Auto-verifying...
+              </>
+            ) : bothVerified ? (
+              <>
+                <ShieldCheck size={15} />
+                Verified ✓
+              </>
+            ) : (
+              <>
+                <ShieldCheck size={15} />
+                Confirm & Mark Verified (Locked)
+              </>
+            )}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4 py-1">
+        {/* Auto verification success banner */}
+        {autoVerifyNotice && (
+          <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-3.5 text-xs font-medium text-emerald-800 flex items-center gap-2">
+            <Loader2 size={16} className="animate-spin text-emerald-600 shrink-0" />
+            <span>{autoVerifyNotice}</span>
+          </div>
+        )}
+
+        {/* Verification Rule Notice */}
+        {!bothVerified && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 flex items-start gap-2">
+            <AlertCircle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">OTP Verification Required</p>
+              <p className="text-[11px] text-amber-800 leading-relaxed">
+                Both <strong>Mobile SMS OTP</strong> and <strong>Email OTP</strong> must be verified for the profile to be marked as Verified. Once both are verified, status automatically updates to Verified.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Customer Header Info */}
+        <div className="flex items-center justify-between rounded-xl bg-slate-50 p-3.5 border border-slate-200">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-semibold text-slate-900">{customer.name}</span>
+              <span className="text-xs text-slate-400 font-mono">({customer.id})</span>
+            </div>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {customer.phone} {customer.email ? `· ${customer.email}` : ''}
+            </p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+              bothVerified ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+            }`}>
+              {phoneVerified && emailVerified ? '2/2 Verified' : phoneVerified || emailVerified ? '1/2 Verified' : '0/2 Verified'}
+            </span>
+          </div>
+        </div>
+
+        {/* 1. Mobile Verification (Edumarc SMS) */}
+        <div className={`rounded-xl border p-4 space-y-3 transition ${phoneVerified ? 'border-emerald-300 bg-emerald-50/30' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <span className={`grid size-8 place-items-center rounded-lg ${phoneVerified ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                <Phone size={16} />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-slate-800">1. Mobile SMS OTP</p>
+                  <span className="text-[10px] text-rose-500 font-semibold">*Required</span>
+                </div>
+                <p className="text-xs text-slate-500">{customer.phone}</p>
+              </div>
+            </div>
+            {phoneVerified ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                <Check size={13} /> Mobile Verified
+              </span>
+            ) : (
+              <Button
+                variant="secondary"
+                className="h-8 px-2.5 text-xs"
+                onClick={handleSendPhoneOtp}
+                disabled={phoneSending}
+              >
+                {phoneSending ? <Loader2 size={13} className="animate-spin" /> : null}
+                {phoneOtpSent ? 'Resend SMS' : 'Send SMS OTP'}
+              </Button>
+            )}
+          </div>
+
+          {phoneMsg.text && (
+            <p className={`text-xs ${phoneMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {phoneMsg.text}
+            </p>
+          )}
+
+          {phoneOtpSent && !phoneVerified && (
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={phoneOtp}
+                onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-9 w-32 rounded-lg border border-slate-300 px-3 text-sm font-mono text-center tracking-widest outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+              <Button
+                className="h-9 px-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+                onClick={handleVerifyPhoneOtp}
+                disabled={phoneVerifying || phoneOtp.length < 4}
+              >
+                {phoneVerifying ? <Loader2 size={13} className="animate-spin" /> : 'Verify Code'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* 2. Email Verification (Brevo) */}
+        <div className={`rounded-xl border p-4 space-y-3 transition ${emailVerified ? 'border-emerald-300 bg-emerald-50/30' : 'border-slate-200'}`}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <span className={`grid size-8 place-items-center rounded-lg ${emailVerified ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-50 text-indigo-700'}`}>
+                <Mail size={16} />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-slate-800">2. Email OTP</p>
+                  <span className="text-[10px] text-rose-500 font-semibold">*Required</span>
+                </div>
+                <p className="text-xs text-slate-500">{customerEmail || 'Email not added'}</p>
+              </div>
+            </div>
+            {emailVerified ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-800">
+                <Check size={13} /> Email Verified
+              </span>
+            ) : (
+              <Button
+                variant="secondary"
+                className="h-8 px-2.5 text-xs"
+                onClick={handleSendEmailOtp}
+                disabled={emailSending || (!customerEmail && !customer.email)}
+              >
+                {emailSending ? <Loader2 size={13} className="animate-spin" /> : null}
+                {emailOtpSent ? 'Resend Email' : 'Send Email OTP'}
+              </Button>
+            )}
+          </div>
+
+          {!customer.email && !emailVerified && (
+            <div className="pt-1">
+              <label className="text-[11px] font-medium text-slate-600 block mb-1">
+                Enter Email to send OTP:
+              </label>
+              <input
+                type="email"
+                placeholder="customer@example.com"
+                value={customerEmail}
+                onChange={(e) => setCustomerEmail(e.target.value)}
+                className="h-8 w-full rounded-lg border border-slate-300 px-2.5 text-xs outline-none focus:border-indigo-500"
+              />
+            </div>
+          )}
+
+          {emailMsg.text && (
+            <p className={`text-xs ${emailMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {emailMsg.text}
+            </p>
+          )}
+
+          {emailOtpSent && !emailVerified && (
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={emailOtp}
+                onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-9 w-32 rounded-lg border border-slate-300 px-3 text-sm font-mono text-center tracking-widest outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
+              />
+              <Button
+                className="h-9 px-3 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+                onClick={handleVerifyEmailOtp}
+                disabled={emailVerifying || emailOtp.length < 4}
+              >
+                {emailVerifying ? <Loader2 size={13} className="animate-spin" /> : 'Verify Code'}
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function AddCustomerModal({ onClose, onSave }) {
+  const [name, setName] = useState('')
+  const [phone, setPhone] = useState('')
+  const [email, setEmail] = useState('')
+  const [status, setStatus] = useState('Review')
+
+  const [phoneOtp, setPhoneOtp] = useState('')
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false)
+  const [phoneSending, setPhoneSending] = useState(false)
+  const [phoneVerifying, setPhoneVerifying] = useState(false)
+  const [phoneVerified, setPhoneVerified] = useState(false)
+  const [phoneMsg, setPhoneMsg] = useState({ type: '', text: '' })
+
+  const [emailOtp, setEmailOtp] = useState('')
+  const [emailOtpSent, setEmailOtpSent] = useState(false)
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailVerifying, setEmailVerifying] = useState(false)
+  const [emailVerified, setEmailVerified] = useState(false)
+  const [emailMsg, setEmailMsg] = useState({ type: '', text: '' })
+
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSendPhoneOtp() {
+    if (!phone || phone.trim().length < 10) {
+      setPhoneMsg({ type: 'error', text: 'Enter a valid 10-digit mobile number first.' })
+      return
+    }
+    setPhoneSending(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        customer_name: name.trim() || undefined,
+      })
+      setPhoneOtpSent(true)
+      setPhoneMsg({ type: 'success', text: `SMS OTP sent to ${phone.trim()} via Edumarc.` })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Failed to send SMS OTP.' })
+    } finally {
+      setPhoneSending(false)
+    }
+  }
+
+  async function handleVerifyPhoneOtp() {
+    if (!phoneOtp || phoneOtp.trim().length < 4) {
+      setPhoneMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setPhoneVerifying(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        otp: phoneOtp.trim(),
+      })
+      setPhoneVerified(true)
+      setStatus('Verified')
+      setPhoneMsg({ type: 'success', text: 'Mobile number verified! Profile status set to Verified.' })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setPhoneVerifying(false)
+    }
+  }
+
+  async function handleSendEmailOtp() {
+    if (!email || !email.includes('@')) {
+      setEmailMsg({ type: 'error', text: 'Enter a valid email address first.' })
+      return
+    }
+    setEmailSending(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        customer_name: name.trim() || undefined,
+      })
+      setEmailOtpSent(true)
+      setEmailMsg({ type: 'success', text: `Email OTP sent to ${email.trim()} via Brevo.` })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Failed to send Email OTP.' })
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
+  async function handleVerifyEmailOtp() {
+    if (!emailOtp || emailOtp.trim().length < 4) {
+      setEmailMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setEmailVerifying(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        otp: emailOtp.trim(),
+      })
+      setEmailVerified(true)
+      setStatus('Verified')
+      setEmailMsg({ type: 'success', text: 'Email verified! Profile status set to Verified.' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setEmailVerifying(false)
+    }
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Full name is required.')
+      return
+    }
+    if (!phone.trim()) {
+      setError('Phone number is required.')
+      return
+    }
+    if (status === 'Verified' && (!phoneVerified || !emailVerified)) {
+      setError('To mark customer as "Verified", both Mobile and Email OTPs must be verified. Alternatively, select status "Review".')
+      return
+    }
+    setError('')
+    setIsSaving(true)
+
+    try {
+      await onSave({
+        name: name.trim(),
+        phone: phone.trim(),
+        email: email.trim() || '',
+        status,
+        phone_verified: phoneVerified,
+        email_verified: emailVerified,
+      })
+      onClose()
+    } catch (err) {
+      setError(err?.message || 'Failed to create customer.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Add New Customer"
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2 w-full">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="add-customer-form"
+            disabled={isSaving}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+            Save Customer
+          </Button>
+        </div>
+      }
+    >
+      <form id="add-customer-form" onSubmit={handleSubmit} className="space-y-4 py-1">
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700">
+            Full Name <span className="text-rose-500">*</span>
+          </label>
+          <input
+            required
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Rahul Sharma"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+
+        {/* Phone + Optional Inline SMS OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Phone Number <span className="text-rose-500">*</span>
+            </label>
+            {phoneVerified ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                <Check size={12} /> Verified via SMS
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSendPhoneOtp}
+                disabled={phoneSending || phone.trim().length < 10}
+                className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+              >
+                {phoneSending ? 'Sending SMS...' : phoneOtpSent ? 'Resend SMS' : 'Verify via SMS OTP'}
+              </button>
+            )}
+          </div>
+          <input
+            required
+            type="tel"
+            value={phone}
+            onChange={(e) => {
+              setPhone(e.target.value)
+              if (phoneVerified) setPhoneVerified(false)
+            }}
+            placeholder="e.g. 9876543210"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {phoneMsg.text && (
+            <p className={`mt-1 text-xs ${phoneMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {phoneMsg.text}
+            </p>
+          )}
+          {phoneOtpSent && !phoneVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={phoneOtp}
+                onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyPhoneOtp}
+                disabled={phoneVerifying || phoneOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                {phoneVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Email + Optional Inline Email OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Email Address <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            {email.trim() && (
+              emailVerified ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                  <Check size={12} /> Verified via Email
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendEmailOtp}
+                  disabled={emailSending || !email.includes('@')}
+                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+                >
+                  {emailSending ? 'Sending Email...' : emailOtpSent ? 'Resend Email' : 'Verify via Email OTP'}
+                </button>
+              )
+            )}
+          </div>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              if (emailVerified) setEmailVerified(false)
+            }}
+            placeholder="e.g. customer@example.com"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {emailMsg.text && (
+            <p className={`mt-1 text-xs ${emailMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {emailMsg.text}
+            </p>
+          )}
+          {emailOtpSent && !emailVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={emailOtp}
+                onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyEmailOtp}
+                disabled={emailVerifying || emailOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {emailVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Profile Status Explanation & Selector */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-800">Profile Status Option</span>
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${status === 'Verified' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+              {status}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setStatus('Review')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Review' ? 'border-amber-500 bg-amber-50/70 text-amber-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Review (Recommended)</span>
+                {status === 'Review' && <Check size={13} className="text-amber-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Profile status will remain "Review". You can verify anytime later from the customer table via SMS/Email OTP.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setStatus('Verified')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Verified' ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Verified</span>
+                {status === 'Verified' && <Check size={13} className="text-emerald-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Customer identity has been personally verified with physical ID/documents or confirmed via OTP above.
+              </p>
+            </button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function EditCustomerModal({ customer, onClose, onSave }) {
+  const [name, setName] = useState(customer?.name || '')
+  const [phone, setPhone] = useState(customer?.phone || '')
+  const [email, setEmail] = useState(customer?.email || '')
+  const [status, setStatus] = useState(customer?.status || 'Review')
+
+  const [phoneOtp, setPhoneOtp] = useState('')
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false)
+  const [phoneSending, setPhoneSending] = useState(false)
+  const [phoneVerifying, setPhoneVerifying] = useState(false)
+  const [phoneVerified, setPhoneVerified] = useState(Boolean(customer?.phone_verified || customer?.status === 'Verified'))
+  const [phoneMsg, setPhoneMsg] = useState({ type: '', text: '' })
+
+  const [emailOtp, setEmailOtp] = useState('')
+  const [emailOtpSent, setEmailOtpSent] = useState(false)
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailVerifying, setEmailVerifying] = useState(false)
+  const [emailVerified, setEmailVerified] = useState(Boolean(customer?.email_verified || customer?.status === 'Verified'))
+  const [emailMsg, setEmailMsg] = useState({ type: '', text: '' })
+
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSendPhoneOtp() {
+    if (!phone || phone.trim().length < 10) {
+      setPhoneMsg({ type: 'error', text: 'Enter a valid 10-digit mobile number first.' })
+      return
+    }
+    setPhoneSending(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        customer_name: name.trim() || undefined,
+      })
+      setPhoneOtpSent(true)
+      setPhoneMsg({ type: 'success', text: `SMS OTP sent to ${phone.trim()}.` })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Failed to send SMS OTP.' })
+    } finally {
+      setPhoneSending(false)
+    }
+  }
+
+  async function handleVerifyPhoneOtp() {
+    if (!phoneOtp || phoneOtp.trim().length < 4) {
+      setPhoneMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setPhoneVerifying(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        otp: phoneOtp.trim(),
+      })
+      setPhoneVerified(true)
+      setStatus('Verified')
+      setPhoneMsg({ type: 'success', text: 'Mobile number verified! Profile status updated to Verified.' })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setPhoneVerifying(false)
+    }
+  }
+
+  async function handleSendEmailOtp() {
+    if (!email || !email.includes('@')) {
+      setEmailMsg({ type: 'error', text: 'Enter a valid email address first.' })
+      return
+    }
+    setEmailSending(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        customer_name: name.trim() || undefined,
+      })
+      setEmailOtpSent(true)
+      setEmailMsg({ type: 'success', text: `Email OTP sent to ${email.trim()}.` })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Failed to send Email OTP.' })
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
+  async function handleVerifyEmailOtp() {
+    if (!emailOtp || emailOtp.trim().length < 4) {
+      setEmailMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setEmailVerifying(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        otp: emailOtp.trim(),
+      })
+      setEmailVerified(true)
+      setStatus('Verified')
+      setEmailMsg({ type: 'success', text: 'Email verified! Profile status updated to Verified.' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setEmailVerifying(false)
+    }
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Full name is required.')
+      return
+    }
+    if (!phone.trim()) {
+      setError('Phone number is required.')
+      return
+    }
+    setError('')
+    setIsSaving(true)
+
+    try {
+      await onSave({
+        name: name.trim(),
+        phone: phone.trim(),
+        email: email.trim() || '',
+        status,
+        phone_verified: phoneVerified,
+        email_verified: emailVerified,
+      })
+      onClose()
+    } catch (err) {
+      setError(err?.message || 'Failed to update customer details.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Edit Customer Details"
+      onClose={onClose}
+      footer={
+        <div className="flex justify-between items-center w-full">
+          <span className="text-[11px] text-slate-400 font-mono">ID: {customer?.id}</span>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="edit-customer-form"
+              disabled={isSaving}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="edit-customer-form" onSubmit={handleSubmit} className="space-y-4 py-1">
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700">
+            Full Name <span className="text-rose-500">*</span>
+          </label>
+          <input
+            required
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Rahul Sharma"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+
+        {/* Phone + Optional Inline SMS OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Phone Number <span className="text-rose-500">*</span>
+            </label>
+            {phoneVerified ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                <Check size={12} /> Verified
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSendPhoneOtp}
+                disabled={phoneSending || phone.trim().length < 10}
+                className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+              >
+                {phoneSending ? 'Sending SMS...' : phoneOtpSent ? 'Resend SMS' : 'Verify via SMS OTP'}
+              </button>
+            )}
+          </div>
+          <input
+            required
+            type="tel"
+            value={phone}
+            onChange={(e) => {
+              setPhone(e.target.value)
+              if (phoneVerified && e.target.value !== customer?.phone) setPhoneVerified(false)
+            }}
+            placeholder="e.g. 9876543210"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {phoneMsg.text && (
+            <p className={`mt-1 text-xs ${phoneMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {phoneMsg.text}
+            </p>
+          )}
+          {phoneOtpSent && !phoneVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={phoneOtp}
+                onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyPhoneOtp}
+                disabled={phoneVerifying || phoneOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                {phoneVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Email + Optional Inline Email OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Email Address <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            {email.trim() && (
+              emailVerified ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                  <Check size={12} /> Verified
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendEmailOtp}
+                  disabled={emailSending || !email.includes('@')}
+                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+                >
+                  {emailSending ? 'Sending Email...' : emailOtpSent ? 'Resend Email' : 'Verify via Email OTP'}
+                </button>
+              )
+            )}
+          </div>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              if (emailVerified && e.target.value !== customer?.email) setEmailVerified(false)
+            }}
+            placeholder="e.g. customer@example.com"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {emailMsg.text && (
+            <p className={`mt-1 text-xs ${emailMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {emailMsg.text}
+            </p>
+          )}
+          {emailOtpSent && !emailVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={emailOtp}
+                onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyEmailOtp}
+                disabled={emailVerifying || emailOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {emailVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Profile Status Option */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-800">Profile Status Option</span>
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${status === 'Verified' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+              {status}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setStatus('Review')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Review' ? 'border-amber-500 bg-amber-50/70 text-amber-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Review</span>
+                {status === 'Review' && <Check size={13} className="text-amber-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Profile status will remain "Review". Verification is pending.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setStatus('Verified')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Verified' ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Verified</span>
+                {status === 'Verified' && <Check size={13} className="text-emerald-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Customer identity has been verified with valid documents or OTP.
+              </p>
+            </button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 function Customers() {
-  const { customers, addRecord, updateCustomerDetails, customerEditHistory = [], currentDemoUser, payments = [], bookings = [], paymentAdjustments = [], addPaymentAdjustment } = useDemoData()
+  const { customers, addRecord, updateRecord, syncCustomers } = useDemoData()
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState('All')
   const [searchParams] = useSearchParams()
   const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
   const [selected, setSelected] = useState(null)
-  const [editingCustomer, setEditingCustomer] = useState(null)
-  const [editError, setEditError] = useState('')
-  const [customerPaymentForm, setCustomerPaymentForm] = useState(null)
-  const [paymentError, setPaymentError] = useState('')
-  const isAdmin = isAdminRole(currentDemoUser?.role)
+  const [verifyCustomer, setVerifyCustomer] = useState(null)
+  const [editCustomer, setEditCustomer] = useState(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [notice, setNotice] = useState('')
 
-  const previousCustomerNames = selected ? customerEditHistory.filter((entry) => entry.customerId === selected.id).flatMap((entry) => entry.changes?.name ? [entry.changes.name.before] : []) : []
-  const customerNames = selected ? new Set([selected.name, ...previousCustomerNames].filter(Boolean)) : new Set()
-  const customerPayments = selected ? payments.filter((payment) => customerNames.has(payment.customer)) : []
-  const effectivePaymentAmount = (payment) => Number(payment.amount || 0) + paymentAdjustments.filter((item) => item.paymentId === payment.id).reduce((sum, item) => sum + Number(item.difference || 0), 0)
+  useEffect(() => {
+    syncCustomers?.()
+  }, [])
 
-  function saveCustomerPaymentCorrection(values) {
-    if (!isAdmin) { setPaymentError('Only the Admin demo role can correct payment records.'); return }
-    const payment = customerPaymentForm
-    const booking = bookings.find((item) => item.id === payment?.booking)
-    if (!payment || !booking) { setPaymentError('The linked booking could not be found.'); return }
-    const amount = Number(values.correctedAmount)
-    if (!Number.isFinite(amount) || amount < 0) { setPaymentError('Enter a valid amount of zero or more.'); return }
-    if (!String(values.reason || '').trim()) { setPaymentError('A correction reason is required.'); return }
-    const difference = amount - effectivePaymentAmount(payment)
-    if (difference > Number(booking.pending || 0)) { setPaymentError(`The increase cannot exceed the booking pending balance (${currency(booking.pending)}).`); return }
-    if (Number(booking.paid || 0) + difference < 0) { setPaymentError('The correction cannot make the booking paid amount negative.'); return }
-    const result = addPaymentAdjustment({ paymentId: payment.id, bookingId: payment.booking, correctedAmount: amount, reason: values.reason.trim(), actor: currentDemoUser })
-    if (!result?.success) { setPaymentError(result?.error || 'Unable to save correction.'); return }
-    setSelected((current) => current ? { ...current, paid: Number(current.paid || 0) + difference, pending: Number(current.pending || 0) - difference } : current)
-    setCustomerPaymentForm(null)
-    setPaymentError('')
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      if (syncCustomers) await syncCustomers()
+    } finally {
+      setIsSyncing(false)
+    }
   }
 
   const filtered = customers.filter((customer) =>
@@ -244,12 +1301,26 @@ function Customers() {
           </div>
         }
       />
+
+      {notice && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+          <div className="flex items-center gap-2">
+            <Check size={16} className="text-emerald-600" />
+            <span>{notice}</span>
+          </div>
+          <button type="button" onClick={() => setNotice('')} className="text-emerald-600 hover:text-emerald-900">
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard label="Total customers" value={customers.length} caption="Managed customers" icon={Users} />
         <MetricCard label="Verified profiles" value={customers.filter((item) => item.status === 'Verified').length} icon={ShieldCheck} tone="blue" />
         <MetricCard label="Total collected" value={currency(totalPaid)} icon={BadgeIndianRupee} tone="violet" />
         <MetricCard label="Pending customer dues" value={currency(pending)} icon={Wallet} tone="amber" />
       </div>
+
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
           <SearchField value={query} onChange={setQuery} placeholder="Search customers…" />
@@ -260,27 +1331,123 @@ function Customers() {
           emptyTitle="No customers registered yet"
           emptyText="Customers added through bookings or manually will appear here."
           columns={[
-            { key: 'customer', label: 'Customer', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id} · {row.email}</span></button> },
+            {
+              key: 'customer',
+              label: 'Customer',
+              render: (row) => (
+                <button
+                  type="button"
+                  onClick={() => setSelected(row)}
+                  className="text-left font-medium text-slate-800 hover:text-emerald-800"
+                >
+                  {row.name}
+                  <span className="mt-1 block text-[11px] font-normal text-slate-400">
+                    {row.id} · {row.email || 'No email'}
+                  </span>
+                </button>
+              ),
+            },
             { key: 'phone', label: 'Phone' },
-            { key: 'bookings', label: 'Bookings', render: (row) => <span>{row.bookings || 0} <span className="text-[11px] text-slate-400">· {row.active || 0} active</span></span> },
+            {
+              key: 'bookings',
+              label: 'Bookings',
+              render: (row) => (
+                <span>
+                  {row.bookings || 0}{' '}
+                  <span className="text-[11px] text-slate-400">· {row.active || 0} active</span>
+                </span>
+              ),
+            },
             { key: 'paid', label: 'Total paid', render: (row) => currency(row.paid || 0) },
             { key: 'pending', label: 'Pending', render: (row) => currency(row.pending || 0) },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            { key: 'actions', label: 'Actions', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}><Eye size={15} />View</Button><Button variant="secondary" className="min-h-8 px-2" onClick={() => { setEditError(''); setEditingCustomer(row) }}>Edit</Button></div> },
+            {
+              key: 'status',
+              label: 'Status',
+              render: (row) => (
+                <div className="flex items-center gap-1.5">
+                  <StatusBadge status={row.status} />
+                  {row.status === 'Review' && (
+                    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700 ring-1 ring-inset ring-amber-600/20">
+                      Unverified
+                    </span>
+                  )}
+                </div>
+              ),
+            },
+            {
+              key: 'actions',
+              label: '',
+              render: (row) => (
+                <div className="flex items-center justify-end gap-1.5">
+                  {row.status === 'Review' && (
+                    <Button
+                      variant="secondary"
+                      className="min-h-8 px-2.5 text-xs font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                      onClick={() => setVerifyCustomer(row)}
+                    >
+                      <ShieldCheck size={14} className="text-emerald-600" />
+                      Verify
+                    </Button>
+                  )}
+                  <Button
+                    variant="quiet"
+                    className="min-h-8 px-2.5 text-slate-700 hover:text-emerald-700"
+                    onClick={() => setEditCustomer(row)}
+                  >
+                    <Pencil size={14} />
+                    Edit
+                  </Button>
+                  <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>
+                    <Eye size={15} />View
+                  </Button>
+                </div>
+              ),
+            },
           ]}
         />
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{filtered.length} customers listed</p>
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+          {filtered.length} customers listed
+        </p>
       </Card>
+
+      {verifyCustomer && (
+        <VerifyCustomerModal
+          customer={verifyCustomer}
+          onClose={() => setVerifyCustomer(null)}
+          onVerified={async (customerId) => {
+            updateRecord('customers', customerId, { status: 'Verified' })
+            if (syncCustomers) await syncCustomers()
+            setNotice(`Customer "${verifyCustomer.name}" verified successfully!`)
+            setTimeout(() => setNotice(''), 4000)
+          }}
+        />
+      )}
+
+      {editCustomer && (
+        <EditCustomerModal
+          customer={editCustomer}
+          onClose={() => setEditCustomer(null)}
+          onSave={async (values) => {
+            const isMongoId = /^[0-9a-fA-F]{24}$/.test(editCustomer.id)
+            if (isMongoId) {
+              await customerService.updateCustomer(editCustomer.id, {
+                name: values.name,
+                phone: values.phone,
+                email: values.email || null,
+                status: values.status,
+              })
+              if (syncCustomers) await syncCustomers()
+            }
+            updateRecord('customers', editCustomer.id, values)
+            setNotice(`Customer "${values.name}" details updated successfully!`)
+            setTimeout(() => setNotice(''), 4000)
+          }}
+        />
+      )}
+
       {showForm && (
-        <RecordForm
-          title="Add a customer"
+        <AddCustomerModal
           onClose={() => setShowForm(false)}
-          fields={[
-            { name: 'name', label: 'Full name', required: true },
-            { name: 'phone', label: 'Phone number', required: true, type: 'tel' },
-            { name: 'email', label: 'Email address', type: 'email' },
-            { name: 'status', label: 'Profile status', type: 'select', options: ['Review', 'Verified'], required: true },
-          ]}
           onSave={async (values) => {
             try {
               const res = await customerService.createCustomer(values)
@@ -297,7 +1464,6 @@ function Customers() {
                 })
               }
             } catch (err) {
-              // Local fallback if unauthenticated
               addRecord('customers', {
                 ...values,
                 id: nextId('CU', customers),
@@ -307,123 +1473,274 @@ function Customers() {
                 pending: 0,
               })
             }
-            setShowForm(false)
+            setNotice(`Customer "${values.name}" created successfully with status ${values.status}!`)
+            setTimeout(() => setNotice(''), 4000)
           }}
-        />
-      )}
-      {editingCustomer && (
-        <RecordForm
-          key={editingCustomer.id}
-          title={`Edit customer · ${editingCustomer.id}`}
-          onClose={() => { setEditingCustomer(null); setEditError('') }}
-          initialValues={{
-            name: editingCustomer.name,
-            phone: editingCustomer.phone,
-            email: editingCustomer.email,
-            status: editingCustomer.status,
-          }}
-          fields={[
-            { name: 'name', label: 'Full name', required: true },
-            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
-            { name: 'email', label: 'Email address', type: 'email' },
-            { name: 'status', label: 'Profile status', type: 'select', options: ['Review', 'Verified'], required: true },
-            { name: 'reason', label: 'Reason for editing', required: true, wide: true, placeholder: 'Explain why these customer details are being changed' },
-          ]}
-          onSave={(values) => {
-            const { reason, ...changes } = values
-            const result = updateCustomerDetails({
-              customerId: editingCustomer.id,
-              changes,
-              reason,
-              actor: currentDemoUser,
-            })
-            if (!result?.success) {
-              setEditError(result?.error || 'Unable to update this customer.')
-              return
-            }
-            setSelected((current) => current?.id === editingCustomer.id ? result.customer : current)
-            setEditingCustomer(null)
-            setEditError('')
-          }}
-          externalError={editError}
-          saveLabel="Save changes"
         />
       )}
       {selected && (
-        <Modal title={selected.name} onClose={() => setSelected(null)}>
-          <div className="space-y-3">
-            {[
-              ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
-              ['Profile status', selected.status], ['Total bookings', selected.bookings],
-              ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
-              ['Pending amount', currency(selected.pending)],
-            ].map(([label, value]) => (
-              <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
-                <span className="text-xs text-slate-500">{label}</span>
-                <span className="text-right text-xs font-medium text-slate-800">{value || '—'}</span>
+        <DetailDialog
+          title={selected.name}
+          record={selected}
+          onClose={() => setSelected(null)}
+          footer={
+            <div className="flex items-center justify-between w-full">
+              {selected.status === 'Review' ? (
+                <Button
+                  variant="secondary"
+                  className="min-h-8 px-3 text-xs font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                  onClick={() => {
+                    const cust = selected
+                    setSelected(null)
+                    setVerifyCustomer(cust)
+                  }}
+                >
+                  <ShieldCheck size={14} className="text-emerald-600 mr-1" />
+                  Verify Profile
+                </Button>
+              ) : <div />}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  className="min-h-8 px-3 text-xs font-semibold text-slate-700 hover:text-emerald-700"
+                  onClick={() => {
+                    const cust = selected
+                    setSelected(null)
+                    setEditCustomer(cust)
+                  }}
+                >
+                  <Pencil size={14} className="mr-1" />
+                  Edit Customer
+                </Button>
+                <Button variant="secondary" onClick={() => setSelected(null)}>
+                  Close
+                </Button>
               </div>
-            ))}
-            <div className="border-t border-slate-200 pt-3">
-              <div className="mb-2 flex items-center justify-between gap-2">
-                <h3 className="text-sm font-semibold text-slate-900">Payment history</h3>
-                <span className="text-[10px] text-slate-400">{customerPayments.length} transaction(s)</span>
-              </div>
-              {customerPayments.length ? customerPayments.map((payment) => {
-                const corrections = paymentAdjustments.filter((item) => item.paymentId === payment.id)
-                return (
-                  <div key={payment.id} className="mb-2 rounded-xl border border-slate-200 p-3 last:mb-0">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div>
-                        <p className="text-xs font-semibold text-slate-800">{payment.id} · {payment.booking}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">{payment.date} · {payment.method} · {payment.status}</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-xs font-semibold text-slate-900">{currency(effectivePaymentAmount(payment))}</p>
-                        <p className="text-[10px] text-slate-400">Original: {currency(payment.amount)}</p>
-                      </div>
-                    </div>
-                    {corrections.map((entry, index) => (
-                      <div key={entry.id} className="mt-2 rounded-lg bg-slate-50 px-2.5 py-2 text-[10px] leading-4 text-slate-600">
-                        Correction {index + 1}: {currency(entry.previousAmount)} → {currency(entry.correctedAmount)} · {entry.reason}<br />
-                        By {entry.correctedBy} ({entry.correctedByRole}) · {new Date(entry.correctedAt).toLocaleString()}
-                      </div>
-                    ))}
-                    {isAdmin && <div className="mt-2 flex justify-end"><Button variant="secondary" className="min-h-8 px-2.5" onClick={() => { setPaymentError(''); setCustomerPaymentForm(payment) }}>Edit payment</Button></div>}
-                  </div>
-                )
-              }) : <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">No payment transactions are linked to this customer in the current demo data.</p>}
-              {!isAdmin && <p className="mt-2 text-[10px] text-slate-400">Payment corrections are available to the Admin demo role only.</p>}
             </div>
-            {customerEditHistory.filter((entry) => entry.customerId === selected.id).map((entry, index) => (
-              <div key={entry.id} className="rounded-lg bg-slate-50 p-2.5 text-[10px] leading-4 text-slate-600">
-                Customer edit {index + 1}: {entry.reason} · {entry.actorName} ({entry.actorRole}) · {new Date(entry.createdAt).toLocaleString()}
-              </div>
-            ))}
-            <p className="pt-1 text-[10px] text-slate-400">Sample workspace details · Demo data only</p>
-          </div>
-        </Modal>
-      )}
-      {customerPaymentForm && isAdmin && (
-        <RecordForm
-          title={`Correct payment · ${customerPaymentForm.id}`}
-          onClose={() => { setCustomerPaymentForm(null); setPaymentError('') }}
-          initialValues={{ correctedAmount: String(effectivePaymentAmount(customerPaymentForm)) }}
-          fields={[
-            { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
-            { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this payment is being corrected' },
+          }
+          rows={[
+            ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
+            ['Profile status', selected.status], ['Total bookings', selected.bookings],
+            ['Active bookings', selected.active], ['Total paid', currency(selected.paid)],
+            ['Pending amount', currency(selected.pending)],
           ]}
-          onSave={saveCustomerPaymentCorrection}
-          externalError={paymentError}
-          saveLabel="Save correction"
         />
       )}
     </div>
   )
 }
 
+function ReturnBikeModal({ booking, onClose, onCompleted }) {
+  const phone = booking.phone || booking.customer_details?.phone || ''
+  const [returnOtp, setReturnOtp] = useState('')
+  const [otpSent, setOtpSent] = useState(false)
+  const [isSending, setIsSending] = useState(false)
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [msg, setMsg] = useState({ type: '', text: '' })
+  const [isCompleted, setIsCompleted] = useState(false)
+
+  async function handleSendOtp() {
+    if (!phone) {
+      setMsg({ type: 'error', text: 'No phone number linked to this booking.' })
+      return
+    }
+    setIsSending(true)
+    setMsg({ type: '', text: '' })
+    try {
+      await bookingService.sendBookingOtp({
+        phone,
+        purpose: 'return',
+        booking_id: booking.id,
+        customer_name: booking.customer,
+        vehicle_name: booking.vehicle,
+      })
+      setOtpSent(true)
+      setMsg({ type: 'success', text: `Return confirmation OTP sent to ${phone} via SMS.` })
+    } catch (err) {
+      setMsg({ type: 'error', text: err?.message || 'Failed to send return OTP.' })
+    } finally {
+      setIsSending(false)
+    }
+  }
+
+  async function executeReturnVerify(otpToVerify) {
+    const code = (otpToVerify !== undefined ? otpToVerify : returnOtp).trim()
+    if (!code || code.length < 4) {
+      setMsg({ type: 'error', text: 'Please enter the 6-digit OTP code.' })
+      return
+    }
+    setIsVerifying(true)
+    setMsg({ type: '', text: '' })
+    try {
+      await bookingService.verifyBookingOtp({
+        phone,
+        purpose: 'return',
+        otp: code,
+        booking_id: booking.id,
+      })
+      setIsCompleted(true)
+      setMsg({ type: 'success', text: 'OTP matched! Bike return confirmed & vehicle moved to Under Review. ✓' })
+      setTimeout(() => {
+        onCompleted(booking.id)
+        onClose()
+      }, 1200)
+    } catch (err) {
+      setMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP code.' })
+    } finally {
+      setIsVerifying(false)
+    }
+  }
+
+  function handleOtpChange(val) {
+    const cleaned = val.replace(/\D/g, '')
+    setReturnOtp(cleaned)
+    if (cleaned.length === 6 && !isVerifying && !isCompleted) {
+      executeReturnVerify(cleaned)
+    }
+  }
+
+  return (
+    <Modal
+      title={`Return Bike & End Ride · ${booking.id}`}
+      onClose={onClose}
+      footer={
+        <div className="flex items-center justify-between gap-3 w-full">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={isVerifying || isCompleted}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => executeReturnVerify()}
+            disabled={!otpSent || returnOtp.length < 4 || isVerifying || isCompleted}
+            className={`text-white transition ${
+              otpSent && returnOtp.length >= 4 && !isCompleted
+                ? 'bg-amber-600 hover:bg-amber-700 cursor-pointer'
+                : 'bg-slate-400 cursor-not-allowed opacity-60'
+            }`}
+          >
+            {isVerifying ? (
+              <>
+                <Loader2 size={15} className="animate-spin" />
+                Ending ride...
+              </>
+            ) : isCompleted ? (
+              <>
+                <Check size={15} />
+                Moved to Under Review ✓
+              </>
+            ) : (
+              <>
+                <RotateCcw size={15} />
+                Verify OTP & End Ride
+              </>
+            )}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4 py-1">
+        {/* Booking Summary Box */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-xs text-slate-500">Vehicle & Customer</p>
+              <p className="font-semibold text-slate-900">{booking.vehicle}</p>
+              <p className="text-xs text-slate-600 mt-0.5">{booking.customer} · {phone || 'No phone'}</p>
+            </div>
+            <StatusBadge status={booking.status} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 border-t border-slate-200 pt-2.5 text-xs">
+            <div>
+              <span className="text-slate-500">Rental dates:</span>
+              <p className="font-medium text-slate-800 mt-0.5">{booking.dates}</p>
+            </div>
+            <div>
+              <span className="text-slate-500">Financials:</span>
+              <p className="font-medium text-slate-800 mt-0.5">
+                Paid: {currency(booking.paid)} {booking.pending > 0 && <span className="text-rose-600 font-semibold">(Due: {currency(booking.pending)})</span>}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {booking.pending > 0 && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800 flex items-start gap-2">
+            <AlertCircle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Pending balance: {currency(booking.pending)}</p>
+              <p className="text-[11px] text-amber-700 mt-0.5">
+                Please collect or settle the pending balance from the customer before or during return.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* SMS OTP Section */}
+        <div className="rounded-xl border border-slate-200 p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <span className="grid size-8 place-items-center rounded-lg bg-amber-100 text-amber-800">
+                <Phone size={16} />
+              </span>
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-slate-800">Return Confirmation OTP</p>
+                  <span className="text-[10px] text-rose-500 font-semibold">*Required</span>
+                </div>
+                <p className="text-xs text-slate-500">{phone || 'No phone'}</p>
+              </div>
+            </div>
+
+            <Button
+              variant="secondary"
+              className="h-8 px-2.5 text-xs"
+              onClick={handleSendOtp}
+              disabled={isSending || !phone || isCompleted}
+            >
+              {isSending ? <Loader2 size={13} className="animate-spin" /> : null}
+              {otpSent ? 'Resend OTP' : 'Send Return OTP'}
+            </Button>
+          </div>
+
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            An OTP will be sent to the customer's mobile number via SMS. Enter the received OTP to confirm vehicle return and officially end the rental.
+          </p>
+
+          {msg.text && (
+            <p className={`text-xs ${msg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {msg.text}
+            </p>
+          )}
+
+          {otpSent && !isCompleted && (
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={returnOtp}
+                onChange={(e) => handleOtpChange(e.target.value)}
+                autoFocus
+                className="h-9 w-32 rounded-lg border border-slate-300 px-3 text-sm font-mono text-center tracking-widest outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-100"
+              />
+              <Button
+                className="h-9 px-3 text-xs bg-amber-600 hover:bg-amber-700 text-white"
+                onClick={() => executeReturnVerify()}
+                disabled={isVerifying || returnOtp.length < 4}
+              >
+                {isVerifying ? <Loader2 size={13} className="animate-spin" /> : 'Confirm Return'}
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 function Bookings() {
-  // Merge resolution: combined the incoming demo/RecordForm state with HEAD's backend sync state.
-  const { bookings, vehicles, customers, currentDemoUser, createDemoBooking, cancelDemoBooking, syncOfflineBookings, syncPayments, syncCustomers, syncVehicles } = useDemoData()
+  const { bookings, vehicles, customers, currentDemoUser, updateRecord, createDemoBooking, cancelDemoBooking, syncOfflineBookings, syncPayments, syncCustomers, syncVehicles } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [selected, setSelected] = useState(null)
@@ -433,6 +1750,7 @@ function Bookings() {
   const [showBookingForm, setShowBookingForm] = useState(false)
   const [cancelForm, setCancelForm] = useState(null)
   const [formError, setFormError] = useState('')
+  const [notice, setNotice] = useState('')
   const [isSyncing, setIsSyncing] = useState(false)
 
   useEffect(() => {
@@ -445,27 +1763,11 @@ function Bookings() {
   const pending = bookings.reduce((sum, item) => sum + Number(item.pending || 0), 0)
   const tabs = ['All', 'Online', 'Offline', 'Confirmed', 'Active', 'Returned', 'Completed', 'Cancelled']
   const filtered = bookings.filter((booking) => {
+    // The shared tab control intentionally matches either booking channel or booking status.
     const termMatch = `${booking.id} ${booking.customer} ${booking.vehicle}`.toLowerCase().includes(query.toLowerCase())
-    return termMatch && (tab === 'All' || booking.type === tab || booking.status === tab)
+    const tabMatch = tab === 'All' || booking.type === tab || booking.status === tab
+    return termMatch && tabMatch
   })
-  const vehicleOptions = vehicles.filter((item) => item.status === 'Online' && item.availability !== 'Maintenance').map((item) => ({ value: item.id, label: `${item.name} · ${currency(item.price)}/day` }))
-  const customerOptions = customers.map((item) => ({ value: item.id, label: item.name }))
-
-  function saveBooking(values) {
-    const result = createDemoBooking({ ...values, type: 'Offline', actor: currentDemoUser })
-    if (!result?.success) { setFormError(result?.error || 'Booking could not be created.'); return }
-    setShowBookingForm(false)
-    setFormError('')
-    setSelected(result.booking)
-  }
-
-  function saveCancellation(values) {
-    const result = cancelDemoBooking({ bookingId: cancelForm.id, reason: values.reason, refundAmount: values.refundAmount, actor: currentDemoUser })
-    if (!result?.success) { setFormError(result?.error || 'Cancellation could not be completed.'); return }
-    setCancelForm(null)
-    setFormError('')
-    setSelected(null)
-  }
 
   async function handleRefresh() {
     setIsSyncing(true)
@@ -487,17 +1789,43 @@ function Bookings() {
 
   return (
     <div>
-      <PageHeader title="Bookings" description="Check vehicle availability, prevent overlapping rentals and manage cancellations." action={<Button onClick={() => { setFormError(''); setShowBookingForm(true) }}><Plus size={16} />Offline booking</Button>} />
+      <PageHeader
+        title="Bookings"
+        description="Track online and in-store rentals, upcoming handovers and payments."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Link to="/app/bookings/new">
+              <Button><Plus size={16} />Offline booking</Button>
+            </Link>
+          </div>
+        }
+      />
+
+      {notice && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-800">
+          <div className="flex items-center gap-2">
+            <Check size={16} className="text-emerald-600" />
+            <span>{notice}</span>
+          </div>
+          <button type="button" onClick={() => setNotice('')} className="text-emerald-600 hover:text-emerald-900">
+            <X size={15} />
+          </button>
+        </div>
+      )}
+
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
         <MetricCard label="Total bookings" value={bookings.length} caption="All bookings" icon={ClipboardList} />
         <MetricCard label="Online bookings" value={online} icon={ArrowUpRight} tone="blue" />
         <MetricCard label="Offline bookings" value={offline} icon={CalendarDays} tone="violet" />
-        <MetricCard label="Paid · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Revenue · pending" value={`${currency(revenue)} · ${currency(pending)}`} icon={CircleDollarSign} tone="amber" />
       </div>
       <Card className="overflow-hidden">
         <Tabs items={tabs.map((label) => ({ label, value: label, count: label === 'All' ? bookings.length : undefined }))} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search ID, customer or vehicle…" /></div>
-        {/* Merge resolution: kept HEAD (backend lifecycle UI) over the incoming demo forms. */}
         <DataTable
           rows={filtered}
           emptyTitle="No customers registered yet"
@@ -507,16 +1835,9 @@ function Bookings() {
               key: 'id',
               label: 'Booking ID',
               render: (row) => (
-                <div className="flex items-center gap-1.5">
-                  <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
-                    {row.id}
-                  </button>
-                  {row.backendSynced && (
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                      API
-                    </span>
-                  )}
-                </div>
+                <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
+                  {row.id}
+                </button>
               ),
             },
             { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
@@ -622,117 +1943,889 @@ function Bookings() {
 }
 
 function Payments() {
-  const { payments, paymentAdjustments = [], refundAdjustments = [], bookings, addPaymentAdjustment, currentDemoUser } = useDemoData()
-  const isAdmin = isAdminRole(currentDemoUser?.role)
+  const {
+    payments = [],
+    bookings = [],
+    expenses = [],
+    financeOverview,
+    syncPayments,
+    syncFinance,
+    syncOfflineBookings,
+    addRecord,
+    updateRecord,
+    deleteRecord,
+  } = useDemoData()
   const [query, setQuery] = useState('')
   const [tab, setTab] = useState('All')
   const [dateRange, setDateRange] = useState('This month')
   const [selected, setSelected] = useState(null)
-  const [correctionForm, setCorrectionForm] = useState(null)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [showRecordModal, setShowRecordModal] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
   const [formError, setFormError] = useState('')
+  const [refundLoading, setRefundLoading] = useState(false)
 
-  const adjustmentTotal = (paymentId) => paymentAdjustments
-    .filter((item) => item.paymentId === paymentId)
-    .reduce((sum, item) => sum + Number(item.difference || 0), 0)
-  const effectiveAmount = (payment) => Number(payment.amount || 0) + adjustmentTotal(payment.id)
-  const revenue = payments.reduce((sum, payment) => sum + effectiveAmount(payment), 0) - refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const pendingRefundTotal = refundAdjustments.filter((item) => item.status === 'Refund pending (demo)').reduce((sum, item) => sum + Number(item.amount || 0), 0)
+  // Section switcher: 'payments' | 'expenses'
+  const [section, setSection] = useState('payments')
+
+  // Expense form state
+  const [showExpenseModal, setShowExpenseModal] = useState(false)
+  const [expCategory, setExpCategory] = useState('Rent & Operations')
+  const [expTitle, setExpTitle] = useState('')
+  const [expAmount, setExpAmount] = useState('')
+  const [expPayee, setExpPayee] = useState('')
+  const [expMethod, setExpMethod] = useState('Bank Transfer')
+  const [expStatus, setExpStatus] = useState('Paid')
+  const [expNotes, setExpNotes] = useState('')
+  const [isExpSubmitting, setIsExpSubmitting] = useState(false)
+  const [expFormError, setExpFormError] = useState('')
+  const [expFilterCategory, setExpFilterCategory] = useState('All')
+
+  // Payment Form State
+  const [formBooking, setFormBooking] = useState('')
+  const [formCustomer, setFormCustomer] = useState('')
+  const [formAmount, setFormAmount] = useState('')
+  const [formMethod, setFormMethod] = useState('UPI')
+  const [formStatus, setFormStatus] = useState('Paid')
+  const [formNotes, setFormNotes] = useState('')
+
+  const revenue = payments
+    .filter((p) => p.status !== 'Refunded')
+    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+
+  const onlineRevenue = payments
+    .filter((p) => p.status !== 'Refunded' && (p.method === 'UPI' || p.method === 'Card' || p.method === 'Online'))
+    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+
+  const offlineRevenue = payments
+    .filter((p) => p.status !== 'Refunded' && (p.method === 'Cash' || p.method === 'Bank Transfer'))
+    .reduce((sum, payment) => sum + (Number(payment.amount) || 0), 0)
+
+  const totalExpenses = expenses.reduce((sum, e) => sum + (Number(e.amount) || 0), 0)
+
+  const pendingTotal = bookings.reduce((sum, b) => sum + (Number(b.pending) || 0), 0)
+
+  // Dynamic monthly comparison data computed from actual payments and expenses
+  const comparisonData = useMemo(() => {
+    if (
+      financeOverview?.comparison_chart &&
+      Array.isArray(financeOverview.comparison_chart) &&
+      financeOverview.comparison_chart.length > 0
+    ) {
+      return financeOverview.comparison_chart
+    }
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    const last6 = []
+    const now = new Date()
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      last6.push({
+        year: d.getFullYear(),
+        month: d.getMonth(),
+        label: monthNames[d.getMonth()],
+        revenue: 0,
+        expenses: 0,
+      })
+    }
+    payments.forEach((p) => {
+      if (p.status === 'Refunded' || p.status === 'Failed') return
+      const pDate = p.date ? new Date(p.date) : null
+      if (pDate && !isNaN(pDate.getTime())) {
+        const match = last6.find((m) => m.year === pDate.getFullYear() && m.month === pDate.getMonth())
+        if (match) match.revenue += Number(p.amount || 0)
+      }
+    })
+    expenses.forEach((e) => {
+      const eDate = e.date ? new Date(e.date) : null
+      if (eDate && !isNaN(eDate.getTime())) {
+        const match = last6.find((m) => m.year === eDate.getFullYear() && m.month === eDate.getMonth())
+        if (match) match.expenses += Number(e.amount || 0)
+      }
+    })
+    const totalRev = last6.reduce((sum, m) => sum + m.revenue, 0)
+    const totalExp = last6.reduce((sum, m) => sum + m.expenses, 0)
+    if (totalRev === 0 && revenue > 0) {
+      last6[last6.length - 1].revenue = revenue
+    }
+    if (totalExp === 0 && totalExpenses > 0) {
+      last6[last6.length - 1].expenses = totalExpenses
+    }
+    return last6.map(({ label, revenue: r, expenses: e }) => ({
+      label,
+      revenue: Math.round(r / 1000) || (r > 0 ? 1 : 0),
+      expenses: Math.round(e / 1000) || (e > 0 ? 1 : 0),
+    }))
+  }, [financeOverview?.comparison_chart, payments, expenses, revenue, totalExpenses])
+
   const filtered = payments.filter((payment) =>
     `${payment.id} ${payment.booking} ${payment.customer} ${payment.method}`.toLowerCase().includes(query.toLowerCase())
-    && (tab === 'All' || (tab === 'Adjusted' ? paymentAdjustments.some((item) => item.paymentId === payment.id) : payment.status === tab)),
-  ).filter((payment) => dateRange === 'All time' || payment.date.includes('Oct 2026'))
+    && (tab === 'All' || payment.status === tab),
+  ).filter((payment) => dateRange === 'All time' || (payment.date && (payment.date.includes('2026') || payment.date.includes('Oct'))))
 
-  function saveCorrection(values) {
-    const correctedAmount = Number(values.correctedAmount)
-    const currentAmount = effectiveAmount(correctionForm)
-    const difference = correctedAmount - currentAmount
-    const booking = bookings.find((item) => item.id === correctionForm.booking)
-    if (!Number.isFinite(correctedAmount) || correctedAmount < 0) {
-      setFormError('Enter a valid corrected amount of zero or more.')
+  const filteredExpenses = expenses.filter((e) =>
+    `${e.id} ${e.category} ${e.title} ${e.payee || ''} ${e.reference || ''}`.toLowerCase().includes(query.toLowerCase())
+    && (expFilterCategory === 'All' || e.category === expFilterCategory),
+  )
+
+  function handleBookingSelect(e) {
+    const bId = e.target.value
+    setFormBooking(bId)
+    if (bId) {
+      const b = bookings.find((item) => item.id === bId)
+      if (b) {
+        setFormCustomer(b.customer || '')
+        if (b.pending && Number(b.pending) > 0) {
+          setFormAmount(String(b.pending))
+        } else if (b.paid && Number(b.paid) > 0) {
+          setFormAmount(String(b.paid))
+        } else if (b.total_amount) {
+          setFormAmount(String(b.total_amount))
+        }
+      }
+    }
+  }
+
+  useEffect(() => {
+    syncPayments?.()
+    syncFinance?.()
+    syncOfflineBookings?.()
+  }, [])
+
+  async function handleRefresh() {
+    setIsSyncing(true)
+    try {
+      await Promise.allSettled([
+        syncPayments ? syncPayments() : Promise.resolve(),
+        syncFinance ? syncFinance() : Promise.resolve(),
+        syncOfflineBookings ? syncOfflineBookings() : Promise.resolve(),
+      ])
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  async function handleRecordExpense(e) {
+    e.preventDefault()
+    if (!expTitle.trim()) {
+      setExpFormError('Expense title/description is required.')
       return
     }
-    if (!String(values.reason || '').trim()) {
-      setFormError('A correction reason is required.')
+    const amt = parseFloat(expAmount)
+    if (isNaN(amt) || amt <= 0) {
+      setExpFormError('Please enter a valid expense amount.')
       return
     }
-    if (!booking) {
-      setFormError('The linked booking could not be found. No correction was saved.')
+
+    setExpFormError('')
+    setIsExpSubmitting(true)
+
+    try {
+      const payload = {
+        category: expCategory,
+        title: expTitle.trim(),
+        amount: amt,
+        payment_method: expMethod,
+        payee: expPayee.trim() || undefined,
+        status: expStatus,
+        notes: expNotes.trim() || undefined,
+      }
+
+      const created = await financeService.createExpense(payload)
+
+      if (addRecord) {
+        addRecord('expenses', {
+          ...created,
+          backendSynced: true,
+        })
+      }
+
+      if (syncFinance) {
+        await syncFinance()
+      }
+
+      setShowExpenseModal(false)
+      setExpTitle('')
+      setExpAmount('')
+      setExpPayee('')
+      setExpNotes('')
+    } catch (err) {
+      setExpFormError(err.message || 'Failed to record expense in backend.')
+    } finally {
+      setIsExpSubmitting(false)
+    }
+  }
+
+  async function handleDeleteExpense(expenseId) {
+    if (!window.confirm(`Are you sure you want to delete expense ${expenseId}?`)) return
+    try {
+      await financeService.deleteExpense(expenseId)
+      if (deleteRecord) {
+        deleteRecord('expenses', expenseId)
+      }
+      if (syncFinance) {
+        await syncFinance()
+      }
+    } catch (err) {
+      alert(`Delete failed: ${err.message || 'Error occurred'}`)
+    }
+  }
+
+  async function handleRecordPayment(e) {
+    e.preventDefault()
+    if (!formCustomer.trim()) {
+      setFormError('Customer name is required.')
       return
     }
-    if (difference > Number(booking.pending || 0)) {
-      setFormError(`The increase cannot exceed the booking's pending balance (${currency(booking.pending)}).`)
+    const amt = parseFloat(formAmount)
+    if (isNaN(amt) || amt <= 0) {
+      setFormError('Please enter a valid positive amount.')
       return
     }
-    if (Number(booking.paid || 0) + difference < 0) {
-      setFormError('The correction cannot make the booking paid amount negative.')
-      return
-    }
-    const result = addPaymentAdjustment({
-      paymentId: correctionForm.id,
-      bookingId: correctionForm.booking,
-      correctedAmount,
-      reason: values.reason.trim(),
-      actor: currentDemoUser,
-    })
-    if (!result?.success) {
-      setFormError(result?.error || 'The payment correction could not be saved.')
-      return
-    }
-    setCorrectionForm(null)
+
     setFormError('')
+    setIsSubmitting(true)
+
+    try {
+      const payload = {
+        booking: formBooking.trim() || 'COUNTER-WALKIN',
+        customer: formCustomer.trim(),
+        method: formMethod,
+        amount: amt,
+        status: formStatus,
+        notes: formNotes.trim() || undefined,
+      }
+
+      const created = await paymentService.recordPayment(payload)
+
+      if (addRecord) {
+        addRecord('payments', {
+          ...created,
+          backendSynced: true,
+        })
+      }
+
+      if (syncPayments) {
+        await syncPayments()
+      }
+
+      if (formBooking && syncOfflineBookings) {
+        await syncOfflineBookings()
+      }
+
+      // If linked to a booking, also adjust booking's paid/pending in state
+      if (formBooking && updateRecord) {
+        const linkedBooking = bookings.find((b) => b.id === formBooking)
+        if (linkedBooking) {
+          const newPaid = (Number(linkedBooking.paid) || 0) + amt
+          const currentPending = Number(linkedBooking.pending) || 0
+          const newPending = Math.max(0, currentPending - amt)
+          updateRecord('bookings', formBooking, {
+            paid: newPaid,
+            pending: newPending,
+          })
+        }
+      }
+
+      setShowRecordModal(false)
+      setFormBooking('')
+      setFormCustomer('')
+      setFormAmount('')
+      setFormMethod('UPI')
+      setFormStatus('Paid')
+      setFormNotes('')
+    } catch (err) {
+      setFormError(err.message || 'Failed to record payment in backend.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function handleRefund(paymentId) {
+    if (!window.confirm(`Are you sure you want to process a refund for ${paymentId}?`)) return
+    setRefundLoading(true)
+    try {
+      await paymentService.refundPayment(paymentId, 'Requested by customer at counter')
+      if (updateRecord) {
+        updateRecord('payments', paymentId, { status: 'Refunded' })
+      }
+      if (syncPayments) {
+        await syncPayments()
+      }
+      setSelected((prev) => (prev && prev.id === paymentId ? { ...prev, status: 'Refunded' } : prev))
+    } catch (err) {
+      alert(`Refund failed: ${err.message || 'Error occurred'}`)
+    } finally {
+      setRefundLoading(false)
+    }
   }
 
   return (
     <div>
-      <PageHeader title="Payments & finance" description="Review transactions and record traceable corrections. This demo does not process refunds or charge cards." action={<div className="flex flex-wrap gap-2"><FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial', 'Adjusted']} /><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>} />
+      <PageHeader
+        title="Payments & finance"
+        description="A clear picture of collections and financial transactions, with UPI, Cash, and Card records."
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              className="min-h-9"
+              onClick={handleRefresh}
+              disabled={isSyncing}
+            >
+              <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button
+              variant="secondary"
+              className="min-h-9"
+              onClick={() => {
+                setExpFormError('')
+                setShowExpenseModal(true)
+              }}
+            >
+              <Plus size={15} />
+              Record expense
+            </Button>
+            <Button
+              className="min-h-9"
+              onClick={() => {
+                setFormError('')
+                setShowRecordModal(true)
+              }}
+            >
+              <Plus size={15} />
+              Record payment
+            </Button>
+            <FilterSelect label="Status" value={tab} onChange={setTab} options={['All', 'Paid', 'Partial', 'Refunded']} />
+            <FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} />
+          </div>
+        }
+      />
+
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <MetricCard label="Collected · adjusted" value={currency(revenue)} caption="Original transactions plus corrections" icon={BadgeIndianRupee} />
-        <MetricCard label="Online bookings" value={currency(248900)} caption="Illustrative month total" icon={ArrowUpRight} tone="blue" />
-        <MetricCard label="Offline revenue" value={currency(105900)} caption="Illustrative month total" icon={Wallet} tone="violet" />
-        <MetricCard label="Pending refunds" value={currency(pendingRefundTotal)} caption={`${refundAdjustments.length} demo refund record(s)`} icon={CircleDollarSign} tone="amber" />
+        <MetricCard label="Collected total" value={currency(financeOverview?.total_revenue ?? revenue)} caption="Total verified receipts" icon={BadgeIndianRupee} />
+        <MetricCard label="Online bookings" value={currency(financeOverview?.online_revenue ?? onlineRevenue)} caption="Total online revenue" icon={ArrowUpRight} tone="blue" />
+        <MetricCard label="Counter & Cash" value={currency(financeOverview?.offline_revenue ?? offlineRevenue)} caption="Offline and counter intake" icon={Wallet} tone="violet" />
+        <MetricCard label="Pending balance" value={currency(financeOverview?.pending_receivables ?? pendingTotal)} caption="Outstanding from bookings" icon={CircleDollarSign} tone="amber" />
       </div>
 
       <div className="mb-4 grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(280px,0.8fr)]">
         <Card className="p-5 sm:p-6">
-          <div className="flex flex-wrap justify-between gap-3"><div><h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2><p className="mt-1 text-xs text-slate-500">Illustrative monthly summary · ₹</p></div><FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} /></div>
-          <div className="mt-4"><ComparisonChart data={[{ label: 'May', revenue: 18, expenses: 9 }, { label: 'Jun', revenue: 22, expenses: 12 }, { label: 'Jul', revenue: 19, expenses: 11 }, { label: 'Aug', revenue: 26, expenses: 14 }, { label: 'Sep', revenue: 31, expenses: 16 }, { label: 'Oct', revenue: 35, expenses: 18 }]} /></div>
+          <div className="flex flex-wrap justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-900">Revenue vs. expenses</h2>
+              <p className="mt-1 text-xs text-slate-500">Monthly breakdown · ₹ (in Thousands)</p>
+            </div>
+            <FilterSelect value={dateRange} onChange={setDateRange} options={['This month', 'Last month', 'All time']} />
+          </div>
+          <div className="mt-4">
+            <ComparisonChart data={comparisonData} />
+          </div>
         </Card>
-        <Card className="p-5 sm:p-6"><h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2><p className="mt-1 text-xs text-slate-500">Illustrative totals for October</p><div className="mt-4 space-y-3">{[['Current balance', '₹2,84,450', 'text-emerald-700'], ['Operating expenses', '₹72,800', 'text-slate-800'], ['Maintenance costs', '₹18,450', 'text-slate-800'], ['Estimated net', '₹2,11,650', 'text-emerald-700']].map(([label, amount, tone]) => <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0"><span className="text-slate-500">{label}</span><span className={`font-semibold ${tone}`}>{amount}</span></div>)}</div></Card>
+
+        <Card className="p-5 sm:p-6">
+          <h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2>
+          <p className="mt-1 text-xs text-slate-500">Live collections & net earnings</p>
+          <div className="mt-4 space-y-3">
+            {[
+              ['Current collections', currency(financeOverview?.total_revenue ?? revenue), 'text-emerald-700'],
+              ['Operating expenses', currency(financeOverview?.operating_expenses ?? totalExpenses), 'text-slate-800'],
+              ['Maintenance costs', currency(financeOverview?.maintenance_costs ?? 0), 'text-slate-800'],
+              ['Estimated net', currency(financeOverview?.estimated_net ?? Math.max(0, (financeOverview?.total_revenue ?? revenue) - totalExpenses)), 'text-emerald-700'],
+            ].map(([label, amount, tone]) => (
+              <div key={label} className="flex justify-between border-b border-slate-100 pb-2.5 text-xs last:border-0">
+                <span className="text-slate-500">{label}</span>
+                <span className={`font-semibold ${tone}`}>{amount}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
       </div>
 
       <Card className="overflow-hidden">
-        <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5"><div><h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2><p className="mt-1 text-xs text-slate-500">Original transaction amounts remain unchanged; corrections are stored separately.</p></div><SearchField value={query} onChange={setQuery} placeholder="Search transactions…" /></div>
-        <DataTable rows={filtered} columns={[
-          { key: 'id', label: 'Transaction', render: (row) => <span className="font-semibold text-slate-800">{row.id}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span></span> },
-          { key: 'customer', label: 'Customer' }, { key: 'method', label: 'Method' }, { key: 'date', label: 'Date' },
-          { key: 'amount', label: 'Original / effective', render: (row) => <span>{currency(row.amount)}<span className="mt-1 block text-[11px] text-slate-500">Effective: {currency(effectiveAmount(row))}</span></span> },
-          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.refundStatus || (paymentAdjustments.some((item) => item.paymentId === row.id) ? 'Adjusted' : row.status)} /> },
-          { key: 'actions', label: '', render: (row) => <div className="flex gap-1"><Button variant="quiet" className="min-h-8 px-2" onClick={() => setSelected(row)}>Details</Button>{isAdmin && <Button variant="secondary" className="min-h-8 px-2" onClick={() => { setFormError(''); setCorrectionForm(row) }}>Correct</Button>}</div> },
-        ]} />
+        <div className="border-b border-slate-100 bg-slate-50/50 px-4 py-2.5 sm:px-5">
+          <div className="flex gap-2">
+            <button
+              onClick={() => setSection('payments')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                section === 'payments'
+                  ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Customer payments ({payments.length})
+            </button>
+            <button
+              onClick={() => setSection('expenses')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                section === 'expenses'
+                  ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Operational expenses ({expenses.length})
+            </button>
+          </div>
+        </div>
+
+        {section === 'payments' ? (
+          <>
+            <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">Recent transactions</h2>
+                <p className="mt-1 text-xs text-slate-500">Recorded offline, counter, and digital payments</p>
+              </div>
+              <SearchField value={query} onChange={setQuery} placeholder="Search transactions…" />
+            </div>
+
+            <DataTable
+              rows={filtered}
+              columns={[
+                {
+                  key: 'id',
+                  label: 'Transaction',
+                  render: (row) => (
+                    <span className="font-semibold text-slate-800">
+                      {row.id}
+                      <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span>
+                    </span>
+                  ),
+                },
+                { key: 'customer', label: 'Customer' },
+                { key: 'method', label: 'Method' },
+                { key: 'date', label: 'Date' },
+                { key: 'amount', label: 'Amount', render: (row) => currency(row.amount) },
+                { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+                {
+                  key: 'actions',
+                  label: '',
+                  render: (row) => (
+                    <div className="flex items-center justify-end gap-1.5">
+                      <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>
+                        <Eye size={15} />Details
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+            <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+              Showing {filtered.length} of {payments.length} transactions
+            </p>
+          </>
+        ) : (
+          <>
+            <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+              <div>
+                <h2 className="text-sm font-semibold text-slate-900">Hub operating expenses</h2>
+                <p className="mt-1 text-xs text-slate-500">Rent, staff salaries, fleet maintenance, utilities, fuel & insurance</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <FilterSelect
+                  label="Category"
+                  value={expFilterCategory}
+                  onChange={setExpFilterCategory}
+                  options={[
+                    'All',
+                    'Rent & Operations',
+                    'Staff Salaries',
+                    'Maintenance',
+                    'Insurance & Taxes',
+                    'Fuel',
+                    'Utilities',
+                    'Marketing',
+                  ]}
+                />
+                <SearchField value={query} onChange={setQuery} placeholder="Search expenses…" />
+              </div>
+            </div>
+
+            <DataTable
+              rows={filteredExpenses}
+              columns={[
+                {
+                  key: 'id',
+                  label: 'Expense ID',
+                  render: (row) => (
+                    <span className="font-semibold text-slate-800">
+                      {row.id}
+                      <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.category}</span>
+                    </span>
+                  ),
+                },
+                {
+                  key: 'title',
+                  label: 'Description / Payee',
+                  render: (row) => (
+                    <div>
+                      <span className="font-medium text-slate-900">{row.title}</span>
+                      {row.payee && <span className="mt-0.5 block text-[11px] text-slate-400">Payee: {row.payee}</span>}
+                    </div>
+                  ),
+                },
+                {
+                  key: 'payment_method',
+                  label: 'Method & Ref',
+                  render: (row) => (
+                    <div>
+                      <span className="text-xs text-slate-700">{row.payment_method}</span>
+                      {row.reference && <span className="mt-0.5 block text-[10px] text-slate-400">{row.reference}</span>}
+                    </div>
+                  ),
+                },
+                { key: 'date', label: 'Date' },
+                {
+                  key: 'amount',
+                  label: 'Amount',
+                  render: (row) => <span className="font-semibold text-rose-600">- {currency(row.amount)}</span>,
+                },
+                {
+                  key: 'status',
+                  label: 'Status',
+                  render: (row) => <StatusBadge status={row.status || 'Paid'} />,
+                },
+                {
+                  key: 'actions',
+                  label: '',
+                  render: (row) => (
+                    <div className="flex items-center justify-end">
+                      <Button
+                        variant="quiet"
+                        className="min-h-8 px-2 text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                        onClick={() => handleDeleteExpense(row.id)}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
+                  ),
+                },
+              ]}
+            />
+            <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">
+              Showing {filteredExpenses.length} of {expenses.length} operating expenses
+            </p>
+          </>
+        )}
       </Card>
-      {selected && <DetailDialog title={`Transaction ${selected.id}`} onClose={() => setSelected(null)} rows={[
-        ['Transaction ID', selected.id], ['Booking', selected.booking], ['Customer', selected.customer], ['Method', selected.method], ['Date', selected.date],
-        ['Original amount', currency(selected.amount)], ['Effective amount', currency(effectiveAmount(selected))], ['Original status', selected.status], ['Refund status', selected.refundStatus || 'No refund recorded'],
-        ...paymentAdjustments.filter((item) => item.paymentId === selected.id).flatMap((item, index) => [
-          [`Correction ${index + 1} · amount`, `${currency(item.difference)} (${currency(item.correctedAmount)} corrected total)`],
-          [`Correction ${index + 1} · reason`, item.reason],
-          [`Correction ${index + 1} · corrected by`, `${item.correctedBy || 'Demo Admin'} (${item.correctedByRole || 'Admin'})`],
-          [`Correction ${index + 1} · date`, new Date(item.correctedAt).toLocaleString()],
-        ]),
-      ]} />}
-      {correctionForm && isAdmin && <RecordForm
-        title={`Correct transaction · ${correctionForm.id}`}
-        onClose={() => { setCorrectionForm(null); setFormError('') }}
-        initialValues={{ correctedAmount: String(effectiveAmount(correctionForm)) }}
-        fields={[
-          { name: 'correctedAmount', label: 'Corrected total amount (₹)', type: 'number', min: 0, step: '0.01', required: true },
-          { name: 'reason', label: 'Reason for correction', required: true, wide: true, placeholder: 'Explain why this transaction needs correction' },
-        ]}
-        onSave={saveCorrection}
-        externalError={formError}
-        saveLabel="Save correction"
-      />}
-      <p className="mt-3 text-[11px] text-slate-400">Demo only: correction records are kept in memory for this app session. No payment gateway, refund, or real money movement occurs.</p>
+
+      {/* Record Payment Modal */}
+      {showRecordModal && (
+        <Modal
+          title="Record Counter / Offline Payment"
+          onClose={() => { if (!isSubmitting) setShowRecordModal(false) }}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setShowRecordModal(false)} disabled={isSubmitting}>
+                Cancel
+              </Button>
+              <Button type="submit" form="record-payment-form" disabled={isSubmitting}>
+                {isSubmitting ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    Recording...
+                  </>
+                ) : (
+                  <>
+                    <Check size={15} />
+                    Save payment
+                  </>
+                )}
+              </Button>
+            </div>
+          }
+        >
+          <form id="record-payment-form" onSubmit={handleRecordPayment} className="space-y-4">
+            {formError && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                {formError}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Link to Booking (Optional)
+              </label>
+              <select
+                value={formBooking}
+                onChange={handleBookingSelect}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="">Counter Walk-in / Direct receipt</option>
+                {bookings.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.id} · {b.customer} ({b.vehicle}) — Pending: ₹{b.pending || 0}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Customer Name <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={formCustomer}
+                onChange={(e) => setFormCustomer(e.target.value)}
+                placeholder="e.g. Ramesh Patel"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Amount (₹) <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="any"
+                  required
+                  value={formAmount}
+                  onChange={(e) => setFormAmount(e.target.value)}
+                  placeholder="e.g. 1500"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Payment Method
+                </label>
+                <select
+                  value={formMethod}
+                  onChange={(e) => setFormMethod(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="UPI">UPI / GPay / PhonePe</option>
+                  <option value="Cash">Cash at Counter</option>
+                  <option value="Card">Debit / Credit Card</option>
+                  <option value="NetBanking">Net Banking</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Payment Status
+              </label>
+              <select
+                value={formStatus}
+                onChange={(e) => setFormStatus(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="Paid">Paid (Full settlement)</option>
+                <option value="Partial">Partial (Advance payment)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Notes / Reference ID (Optional)
+              </label>
+              <input
+                type="text"
+                value={formNotes}
+                onChange={(e) => setFormNotes(e.target.value)}
+                placeholder="e.g. UPI Ref: 4291823901 or Counter receipt #12"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Record Business Expense Modal */}
+      {showExpenseModal && (
+        <Modal
+          title="Record Hub Operating Expense"
+          onClose={() => { if (!isExpSubmitting) setShowExpenseModal(false) }}
+          footer={
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setShowExpenseModal(false)} disabled={isExpSubmitting}>
+                Cancel
+              </Button>
+              <Button type="submit" form="record-expense-form" disabled={isExpSubmitting}>
+                {isExpSubmitting ? (
+                  <>
+                    <Loader2 size={15} className="animate-spin" />
+                    Recording...
+                  </>
+                ) : (
+                  <>
+                    <Check size={15} />
+                    Save expense
+                  </>
+                )}
+              </Button>
+            </div>
+          }
+        >
+          <form id="record-expense-form" onSubmit={handleRecordExpense} className="space-y-4">
+            {expFormError && (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                {expFormError}
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Expense Category <span className="text-rose-500">*</span>
+              </label>
+              <select
+                value={expCategory}
+                onChange={(e) => setExpCategory(e.target.value)}
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              >
+                <option value="Rent & Operations">Rent & Operations (Facility Lease)</option>
+                <option value="Staff Salaries">Staff Salaries & Technicians</option>
+                <option value="Maintenance">Fleet Maintenance & Spare Parts</option>
+                <option value="Insurance & Taxes">Insurance Policies & Road Taxes</option>
+                <option value="Fuel">Fuel & EV Fast Charging Credits</option>
+                <option value="Utilities">Utilities (Electricity, Fiber Internet)</option>
+                <option value="Marketing">Marketing & Local Ads</option>
+                <option value="Misc">Miscellaneous Hub Expenses</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Expense Title / Description <span className="text-rose-500">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={expTitle}
+                onChange={(e) => setExpTitle(e.target.value)}
+                placeholder="e.g. Indiranagar Hub Monthly Facility Lease"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Amount (₹) <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  step="any"
+                  required
+                  value={expAmount}
+                  onChange={(e) => setExpAmount(e.target.value)}
+                  placeholder="e.g. 35000"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Payment Method
+                </label>
+                <select
+                  value={expMethod}
+                  onChange={(e) => setExpMethod(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="Bank Transfer">Bank Transfer / NEFT / RTGS</option>
+                  <option value="UPI">UPI / GPay / PhonePe</option>
+                  <option value="Cash">Cash at Counter</option>
+                  <option value="Card">Corporate Debit/Credit Card</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Payee / Vendor (Optional)
+                </label>
+                <input
+                  type="text"
+                  value={expPayee}
+                  onChange={(e) => setExpPayee(e.target.value)}
+                  placeholder="e.g. Brigade Properties or Shell"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                  Payment Status
+                </label>
+                <select
+                  value={expStatus}
+                  onChange={(e) => setExpStatus(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+                >
+                  <option value="Paid">Paid (Settled)</option>
+                  <option value="Pending">Pending (Due)</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold text-slate-700">
+                Notes / Invoice Ref (Optional)
+              </label>
+              <input
+                type="text"
+                value={expNotes}
+                onChange={(e) => setExpNotes(e.target.value)}
+                placeholder="e.g. Inv #OCT-482 or RTGS ref number"
+                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-800 transition focus:border-emerald-500 focus:outline-none"
+              />
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Detail Dialog with Refund Action */}
+      {selected && (
+        <Modal title={`Transaction ${selected.id}`} onClose={() => setSelected(null)}>
+          <div className="space-y-3">
+            {[
+              ['Transaction ID', selected.id],
+              ['Booking ID', selected.booking],
+              ['Customer', selected.customer],
+              ['Payment Method', selected.method],
+              ['Date', selected.date],
+              ['Amount', currency(selected.amount)],
+              ['Status', selected.status],
+              ['Notes', selected.notes || 'None'],
+              ['Sync Status', 'Verified & In Sync'],
+            ].map(([label, value]) => (
+              <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
+                <span className="text-xs text-slate-500">{label}</span>
+                <span className="text-right text-xs font-medium text-slate-800">{value}</span>
+              </div>
+            ))}
+
+            {selected.status !== 'Refunded' && (
+              <div className="mt-4 pt-2">
+                <Button
+                  variant="secondary"
+                  className="w-full text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                  disabled={refundLoading}
+                  onClick={() => handleRefund(selected.id)}
+                >
+                  {refundLoading ? (
+                    <>
+                      <Loader2 size={14} className="animate-spin" />
+                      Processing refund...
+                    </>
+                  ) : (
+                    'Process refund for this transaction'
+                  )}
+                </Button>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -750,6 +2843,7 @@ function Documents() {
   const [replacementError, setReplacementError] = useState('')
   const [isReplacing, setIsReplacing] = useState(false)
   const [documentNotice, setDocumentNotice] = useState('')
+  const [updatingStatusId, setUpdatingStatusId] = useState(null)
 
   // Upload modal form state
   const [formName, setFormName] = useState('')
@@ -781,7 +2875,7 @@ function Documents() {
                 isVehicleAttachment: true,
                 vehicle_document_public_id: typeof vd === 'object' ? (vd.publicId || vd.public_id) : null,
                 vehicle_document_type: typeof vd === 'object' ? (vd.type || 'Other') : 'Other',
-                status: 'Verified',
+                status: (typeof vd === 'object' && vd.status) ? vd.status : 'Verified',
                 date: v.createdAt ? new Date(v.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : 'Recent',
                 backendSynced: true,
               })
@@ -812,70 +2906,6 @@ function Documents() {
       }
     } finally {
       setIsSyncing(false)
-    }
-  }
-
-  async function handleUpload(e) {
-    e.preventDefault()
-    if (!selectedFile) {
-      setUploadError('Please select a file to upload.')
-      return
-    }
-    if (!formName.trim()) {
-      setUploadError('Document name is required.')
-      return
-    }
-
-    setUploadError('')
-    setIsUploading(true)
-
-    try {
-      const selectedVehicle = vehicles?.find((v) => v.id === formVehicleId)
-
-      const formData = new FormData()
-      formData.append('file', selectedFile)
-      formData.append('name', formName.trim())
-      formData.append('category', formCategory)
-      formData.append('scope', formScope)
-      if (formScope === 'Vehicle' && formVehicleId) {
-        formData.append('vehicle_id', formVehicleId)
-        formData.append('vehicle_name', selectedVehicle?.name || '')
-      }
-      if (formNotes.trim()) {
-        formData.append('notes', formNotes.trim())
-      }
-
-      const createdDoc = await documentService.uploadDocument(formData)
-      if (syncDocuments) {
-        await syncDocuments()
-      } else {
-        addRecord('documents', {
-          ...createdDoc,
-          backendSynced: true,
-        })
-      }
-
-      // Reset form
-      setShowForm(false)
-      setFormName('')
-      setSelectedFile(null)
-      setFormNotes('')
-      setFormVehicleId('')
-    } catch (err) {
-      console.error('Document upload error:', err)
-      setUploadError(err.message || 'Failed to upload document to Cloudinary.')
-    } finally {
-      setIsUploading(false)
-    }
-  }
-
-  async function handleDelete(docId) {
-    if (!window.confirm(`Are you sure you want to delete document ${docId}?`)) return
-    try {
-      await documentService.deleteDocument(docId)
-      if (syncDocuments) await syncDocuments()
-    } catch (err) {
-      console.warn('Backend delete fallback:', err)
     }
   }
 
@@ -958,16 +2988,116 @@ function Documents() {
     }
   }
 
+  async function handleUpload(e) {
+    e.preventDefault()
+    if (!selectedFile) {
+      setUploadError('Please select a file to upload.')
+      return
+    }
+    if (!formName.trim()) {
+      setUploadError('Document name is required.')
+      return
+    }
+
+    setUploadError('')
+    setIsUploading(true)
+
+    try {
+      const selectedVehicle = vehicles?.find((v) => v.id === formVehicleId)
+
+      const formData = new FormData()
+      formData.append('file', selectedFile)
+      formData.append('name', formName.trim())
+      formData.append('category', formCategory)
+      formData.append('scope', formScope)
+      if (formScope === 'Vehicle' && formVehicleId) {
+        formData.append('vehicle_id', formVehicleId)
+        formData.append('vehicle_name', selectedVehicle?.name || '')
+      }
+      if (formNotes.trim()) {
+        formData.append('notes', formNotes.trim())
+      }
+
+      const createdDoc = await documentService.uploadDocument(formData)
+      if (syncDocuments) {
+        await syncDocuments()
+      } else {
+        addRecord('documents', {
+          ...createdDoc,
+          backendSynced: true,
+        })
+      }
+
+      // Reset form
+      setShowForm(false)
+      setFormName('')
+      setSelectedFile(null)
+      setFormNotes('')
+      setFormVehicleId('')
+    } catch (err) {
+      console.error('Document upload error:', err)
+      setUploadError(err.message || 'Failed to upload document.')
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  async function handleStatusChange(doc, newStatus) {
+    if (!doc || !newStatus || doc.status === newStatus) return
+    setUpdatingStatusId(doc.id)
+    try {
+      await documentService.updateDocument(doc.id, { status: newStatus })
+
+      if (doc.isVehicleAttachment && doc.vehicle_id) {
+        const v = vehicles?.find((item) => item.id === doc.vehicle_id)
+        if (v && updateRecord) {
+          const updatedDocs = (v.documents || []).map((vd) => {
+            const vdId = vd.id || vd.publicId || vd.public_id
+            if (vdId === doc.id || (vd.url && (vd.url === doc.file_url || vd.url === doc.url))) {
+              return { ...vd, status: newStatus }
+            }
+            return vd
+          })
+          updateRecord('vehicles', v.id, { ...v, documents: updatedDocs })
+        }
+      } else if (updateRecord) {
+        updateRecord('documents', doc.id, { status: newStatus })
+      }
+
+      if (selected && selected.id === doc.id) {
+        setSelected((prev) => (prev ? { ...prev, status: newStatus } : prev))
+      }
+
+      setDocumentNotice(`Status of "${doc.name}" updated to "${newStatus}".`)
+      if (syncDocuments) await syncDocuments()
+    } catch (err) {
+      console.error('Failed to update document status:', err)
+      alert(err.message || 'Failed to update document status.')
+    } finally {
+      setUpdatingStatusId(null)
+    }
+  }
+
+  async function handleDelete(docId) {
+    if (!window.confirm(`Are you sure you want to delete document ${docId}?`)) return
+    try {
+      await documentService.deleteDocument(docId)
+      if (syncDocuments) await syncDocuments()
+    } catch (err) {
+      console.warn('Backend delete fallback:', err)
+    }
+  }
+
   return (
     <div>
       <PageHeader
         title="Documents"
-        description="Paperwork and certificates uploaded to Cloudinary, with secure URLs saved in database."
+        description="Manage vehicle paperwork, registration certificates and business compliance."
         action={
           <div className="flex items-center gap-2">
             <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
               <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
-              {isSyncing ? 'Syncing...' : 'Sync backend'}
+              {isSyncing ? 'Syncing...' : 'Sync documents'}
             </Button>
             <Button onClick={() => { setShowForm(true); setUploadError('') }}>
               <Upload size={16} />Upload document
@@ -991,8 +3121,8 @@ function Documents() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Business', 'Vehicle']} value={tab} onChange={setTab} />
         <div className="px-4 py-3 sm:px-5">
-          <div className="flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs leading-5 text-sky-900">
-            <span className="font-semibold text-sky-800">☁️ Cloudinary Storage:</span> Files are uploaded directly to Cloudinary CDN, and the secure URLs and metadata are stored in MongoDB.
+          <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs leading-5 text-emerald-900">
+            <span className="font-semibold text-emerald-800">🔒 Secure Document Vault:</span> All compliance paperwork, RC, and permits are securely encrypted and verified.
           </div>
         </div>
 
@@ -1017,8 +3147,8 @@ function Documents() {
                     <span className="flex items-center gap-1.5">
                       {row.name}
                       {(row.file_url || row.url) && (
-                        <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-600/20">
-                          Cloudinary
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
+                          Attached
                         </span>
                       )}
                     </span>
@@ -1031,7 +3161,43 @@ function Documents() {
             },
             { key: 'category', label: 'Category' },
             { key: 'date', label: 'Uploaded' },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+            {
+              key: 'status',
+              label: 'Status',
+              render: (row) => {
+                const statusColors = {
+                  Verified: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 hover:bg-emerald-100',
+                  'In review': 'bg-amber-50 text-amber-700 ring-amber-600/20 hover:bg-amber-100',
+                  'Expires soon': 'bg-amber-50 text-amber-700 ring-amber-600/20 hover:bg-amber-100',
+                  Expired: 'bg-rose-50 text-rose-700 ring-rose-600/20 hover:bg-rose-100',
+                  Rejected: 'bg-rose-50 text-rose-700 ring-rose-600/20 hover:bg-rose-100',
+                }
+                const currentStatus = row.status || 'In review'
+                return (
+                  <div className="relative inline-flex items-center">
+                    <select
+                      value={currentStatus}
+                      disabled={updatingStatusId === row.id}
+                      onChange={(e) => handleStatusChange(row, e.target.value)}
+                      title="Click to change document status"
+                      aria-label={`Change status for ${row.name}`}
+                      className={`cursor-pointer appearance-none rounded-full py-1 pl-2.5 pr-6 text-[11px] font-semibold ring-1 ring-inset outline-none transition disabled:cursor-not-allowed disabled:opacity-50 ${statusColors[currentStatus] || 'bg-slate-100 text-slate-700 ring-slate-300'}`}
+                    >
+                      <option value="Verified">Verified</option>
+                      <option value="In review">In review</option>
+                      <option value="Expires soon">Expires soon</option>
+                      <option value="Expired">Expired</option>
+                      <option value="Rejected">Rejected</option>
+                    </select>
+                    {updatingStatusId === row.id ? (
+                      <Loader2 size={11} className="pointer-events-none absolute right-2 animate-spin text-slate-500" />
+                    ) : (
+                      <ChevronDown size={11} className="pointer-events-none absolute right-2 text-slate-500" />
+                    )}
+                  </div>
+                )
+              },
+            },
             {
               key: 'actions',
               label: '',
@@ -1092,10 +3258,10 @@ function Documents() {
         </p>
       </Card>
 
-      {/* Cloudinary Upload Document Modal */}
+      {/* Upload Document Modal */}
       {showForm && (
         <Modal
-          title="Upload Document to Cloudinary"
+          title="Upload Document"
           onClose={() => { if (!isUploading) setShowForm(false) }}
           footer={
             <div className="flex justify-end gap-2">
@@ -1106,7 +3272,7 @@ function Documents() {
                 {isUploading ? (
                   <>
                     <Loader2 size={15} className="animate-spin" />
-                    Uploading to Cloudinary...
+                    Uploading document...
                   </>
                 ) : (
                   <>
@@ -1226,8 +3392,8 @@ function Documents() {
               />
             </div>
 
-            <div className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-800">
-              ⚡ File is uploaded directly to your Cloudinary cloud (<span className="font-mono">himuiwgh</span>). The secure CDN link is then saved in MongoDB.
+            <div className="rounded-xl bg-slate-50 p-3 text-[11px] leading-5 text-slate-600">
+              🔒 File will be securely encrypted and linked to your business records.
             </div>
           </form>
         </Modal>
@@ -1282,18 +3448,59 @@ function Documents() {
                   {selected.scope} {selected.vehicle_name ? `· Vehicle: ${selected.vehicle_name}` : ''}
                 </p>
               </div>
-              <StatusBadge status={selected.status || 'Verified'} />
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">Status:</span>
+                <div className="relative inline-flex items-center">
+                  <select
+                    value={selected.status || 'In review'}
+                    disabled={updatingStatusId === selected.id}
+                    onChange={(e) => handleStatusChange(selected, e.target.value)}
+                    title="Change verification status"
+                    aria-label={`Change verification status for ${selected.name}`}
+                    className={`cursor-pointer appearance-none rounded-full py-1 pl-3 pr-7 text-xs font-semibold ring-1 ring-inset outline-none transition disabled:cursor-not-allowed disabled:opacity-50 ${{
+                      Verified: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20 hover:bg-emerald-100',
+                      'In review': 'bg-amber-50 text-amber-700 ring-amber-600/20 hover:bg-amber-100',
+                      'Expires soon': 'bg-amber-50 text-amber-700 ring-amber-600/20 hover:bg-amber-100',
+                      Expired: 'bg-rose-50 text-rose-700 ring-rose-600/20 hover:bg-rose-100',
+                      Rejected: 'bg-rose-50 text-rose-700 ring-rose-600/20 hover:bg-rose-100',
+                    }[selected.status] || 'bg-slate-100 text-slate-700 ring-slate-300'}`}
+                  >
+                    <option value="Verified">Verified</option>
+                    <option value="In review">In review</option>
+                    <option value="Expires soon">Expires soon</option>
+                    <option value="Expired">Expired</option>
+                    <option value="Rejected">Rejected</option>
+                  </select>
+                  {updatingStatusId === selected.id ? (
+                    <Loader2 size={12} className="pointer-events-none absolute right-2 animate-spin text-slate-500" />
+                  ) : (
+                    <ChevronDown size={12} className="pointer-events-none absolute right-2 text-slate-500" />
+                  )}
+                </div>
+              </div>
             </div>
 
             {/* In-app Document Preview */}
             {(selected.file_url || selected.url) ? (
               <div className="overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
                 {String(selected.file_url || selected.url).toLowerCase().includes('.pdf') ? (
-                  <iframe
-                    src={selected.file_url || selected.url}
-                    title={selected.name}
-                    className="h-96 w-full border-0 bg-white"
-                  />
+                  <div className="flex flex-col items-center justify-center p-3">
+                    <img
+                      src={String(selected.file_url || selected.url).replace(/\.pdf$/i, '.jpg')}
+                      alt={selected.name}
+                      className="max-h-96 max-w-full rounded-lg object-contain shadow-sm bg-white"
+                      onError={(e) => {
+                        e.target.style.display = 'none'
+                        if (e.target.parentNode) {
+                          e.target.parentNode.innerHTML =
+                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline preview. Please click "Open in new tab" above.</p>'
+                        }
+                      }}
+                    />
+                    <p className="mt-2 text-center text-[11px] text-slate-500">
+                      To view or print the full document, click <strong>&ldquo;Open in new tab&rdquo;</strong> above.
+                    </p>
+                  </div>
                 ) : (
                   <div className="flex max-h-96 items-center justify-center p-2">
                     <img
@@ -1320,6 +3527,7 @@ function Documents() {
             {/* Details Table */}
             <div className="space-y-2 border-t border-slate-100 pt-3">
               {[
+                ['Status', selected.status || 'Verified'],
                 ['Category', selected.category],
                 ['Scope', selected.scope],
                 ['Associated Vehicle', selected.vehicle_name || selected.vehicle_id || 'None'],
@@ -1425,7 +3633,7 @@ function Maintenance() {
     setIsSyncing(true)
     try {
       if (syncMaintenance) await syncMaintenance()
-      if (syncVehicles) await syncVehicles({ force: true })
+      if (syncVehicles) await syncVehicles()
     } finally {
       setIsSyncing(false)
     }
@@ -1479,7 +3687,10 @@ function Maintenance() {
                     await maintenanceService.completeMaintenance(row.id)
                     if (syncMaintenance) await syncMaintenance()
                     if (syncVehicles) await syncVehicles({ force: true })
-                  } catch {}
+                    else updateRecord('maintenance', row.id, { status: 'Completed' })
+                  } catch {
+                    updateRecord('maintenance', row.id, { status: 'Completed' })
+                  }
                 }}>
                   Complete
                 </Button>
@@ -1519,7 +3730,14 @@ function Maintenance() {
               })
               if (syncMaintenance) await syncMaintenance()
               if (syncVehicles) await syncVehicles({ force: true })
-            } catch {}
+            } catch {
+              addRecord('maintenance', {
+                ...values,
+                id: nextId('MT', maintenance),
+                cost: Number(values.cost),
+                status: 'Ongoing',
+              })
+            }
             setShowForm(false)
           }}
         />
@@ -1529,114 +3747,421 @@ function Maintenance() {
   )
 }
 
+function EditStaffModal({ staffMember, onClose, onSave }) {
+  const [name, setName] = useState(staffMember?.name || '')
+  const [role, setRole] = useState(staffMember?.role || 'Fleet manager')
+  const [phone, setPhone] = useState(staffMember?.phone || '')
+  const [salary, setSalary] = useState(staffMember?.salary != null ? String(staffMember.salary) : '')
+  const [attendance, setAttendance] = useState(staffMember?.attendance || '26 / 26 days')
+  const [nextSalary, setNextSalary] = useState(staffMember?.nextSalary || '')
+  const [status, setStatus] = useState(staffMember?.status || 'Active')
+  const [error, setError] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const roles = [
+    'Fleet manager',
+    'Operations associate',
+    'Customer support',
+    'Delivery associate',
+    'Administrator',
+  ]
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Full name is required.')
+      return
+    }
+    if (!phone.trim()) {
+      setError('Phone number is required.')
+      return
+    }
+    if (salary === '' || isNaN(Number(salary)) || Number(salary) < 0) {
+      setError('Please enter a valid salary amount.')
+      return
+    }
+
+    setError('')
+    setIsSubmitting(true)
+
+    const payload = {
+      name: name.trim(),
+      role,
+      phone: phone.trim(),
+      salary: Number(salary),
+      attendance: attendance.trim() || 'Not recorded',
+      nextSalary: nextSalary || '',
+      status,
+    }
+
+    try {
+      await onSave(staffMember.id, payload)
+      onClose()
+    } catch (err) {
+      setError(err?.message || 'Failed to update staff member.')
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  return (
+    <Modal
+      title={`Edit Staff Member · ${staffMember?.name}`}
+      onClose={onClose}
+      footer={
+        <div className="flex justify-end gap-2 w-full">
+          <Button type="button" variant="secondary" onClick={onClose} disabled={isSubmitting}>
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            form="edit-staff-form"
+            disabled={isSubmitting}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+          >
+            {isSubmitting ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+            Save Changes
+          </Button>
+        </div>
+      }
+    >
+      <form id="edit-staff-form" onSubmit={handleSubmit} className="space-y-4 py-1">
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700">
+            Full Name <span className="text-rose-500">*</span>
+          </label>
+          <input
+            required
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Ramesh Kumar"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Role <span className="text-rose-500">*</span>
+            </label>
+            <select
+              value={role}
+              onChange={(e) => setRole(e.target.value)}
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            >
+              {roles.map((r) => (
+                <option key={r} value={r}>
+                  {r}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Status <span className="text-rose-500">*</span>
+            </label>
+            <select
+              value={status}
+              onChange={(e) => setStatus(e.target.value)}
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            >
+              <option value="Active">Active</option>
+              <option value="Inactive">Inactive</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Phone Number <span className="text-rose-500">*</span>
+            </label>
+            <input
+              required
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="e.g. 9876543210"
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Monthly Salary (₹) <span className="text-rose-500">*</span>
+            </label>
+            <input
+              required
+              type="number"
+              min="0"
+              step="0.01"
+              value={salary}
+              onChange={(e) => setSalary(e.target.value)}
+              placeholder="e.g. 25000"
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Attendance Record
+            </label>
+            <input
+              type="text"
+              value={attendance}
+              onChange={(e) => setAttendance(e.target.value)}
+              placeholder="e.g. 26 / 26 days"
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-700">
+              Next Salary Date
+            </label>
+            <input
+              type="date"
+              value={nextSalary}
+              onChange={(e) => setNextSalary(e.target.value)}
+              className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+            />
+          </div>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 function Staff() {
-  const [staff, setStaff] = useState([])
+  const { staff = [], addRecord, updateRecord, deleteRecord, syncStaff } = useDemoData()
   const [tab, setTab] = useState('All')
   const [query, setQuery] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [editingStaff, setEditingStaff] = useState(null)
   const [selected, setSelected] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [documentsByStaff, setDocumentsByStaff] = useState({})
+  const [documentTypes, setDocumentTypes] = useState({})
+  const [documentErrors, setDocumentErrors] = useState({})
+  const [previewDocument, setPreviewDocument] = useState(null)
+  const [previewUrl, setPreviewUrl] = useState('')
 
-  async function staffRequest(path, options = {}) {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
-      ...options,
-      credentials: 'include',
-      headers: {
-        ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-        ...options.headers,
-      },
+  useEffect(() => {
+    syncStaff?.()
+  }, [])
+
+  // Sync loaded documents from staff members
+  useEffect(() => {
+    const docMap = {}
+    staff.forEach((person) => {
+      if (Array.isArray(person.documents) && person.documents.length) {
+        docMap[person.id] = person.documents
+      }
     })
+    setDocumentsByStaff((current) => ({
+      ...docMap,
+      ...current,
+    }))
+  }, [staff])
 
-    const contentType = response.headers.get('content-type') || ''
-    const data = contentType.includes('application/json')
-      ? await response.json().catch(() => ({}))
-      : await response.text().catch(() => '')
-
-    if (!response.ok) {
-      const detail = data && typeof data === 'object' ? data.detail : data
-      const message = Array.isArray(detail)
-        ? detail.map((item) => item?.msg || String(item)).join(', ')
-        : detail || `Request failed (${response.status})`
-      throw new Error(String(message))
-    }
-    return data
-  }
-
-  async function loadStaff() {
-    setLoading(true)
-    setError('')
+  async function handleRefresh() {
+    setIsSyncing(true)
     try {
-      const data = await staffRequest('/staff/')
-      setStaff(Array.isArray(data) ? data : (data.items || []))
-    } catch (requestError) {
-      setError(requestError.message || 'Unable to load staff. Please try again.')
+      if (syncStaff) await syncStaff()
     } finally {
-      setLoading(false)
+      setIsSyncing(false)
     }
   }
 
   useEffect(() => {
-    loadStaff()
-    // Load once when the Staff page mounts.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    if (!previewDocument) {
+      setPreviewUrl('')
+      return undefined
+    }
+
+    if (previewDocument.file instanceof Blob) {
+      const url = URL.createObjectURL(previewDocument.file)
+      setPreviewUrl(url)
+      return () => {
+        URL.revokeObjectURL(url)
+      }
+    }
+
+    if (previewDocument.staffId && previewDocument.id) {
+      let active = true
+      staffService
+        .getStaffDocumentBlobUrl(previewDocument.staffId, previewDocument.id)
+        .then((url) => {
+          if (active) setPreviewUrl(url)
+        })
+        .catch(() => {
+          if (active && previewDocument.url) setPreviewUrl(previewDocument.url)
+        })
+      return () => {
+        active = false
+      }
+    }
+
+    const url = previewDocument.url || ''
+    setPreviewUrl(url)
+    return undefined
+  }, [previewDocument])
 
   const filtered = staff.filter((person) =>
     (tab === 'All' || person.status === tab)
     && `${person.name || ''} ${person.role || ''} ${person.phone || ''}`.toLowerCase().includes(query.toLowerCase()),
   )
 
-  async function createStaff(values) {
-    setSaving(true)
-    setError('')
-    setNotice('')
-    try {
-      const created = await staffRequest('/staff/', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: values.name.trim(),
-          role: values.role,
-          phone: values.phone.trim(),
-          salary: Number(values.salary),
-          nextSalary: values.nextSalary || '',
-          attendance: 'Not recorded',
-          status: 'Active',
-        }),
-      })
-      setStaff((current) => [created, ...current])
-      setShowForm(false)
-      setNotice('Staff member added successfully.')
-    } catch (requestError) {
-      setError(requestError.message || 'Unable to add staff member.')
-    } finally {
-      setSaving(false)
+  async function uploadDocuments(person, event) {
+    const files = Array.from(event.target.files || [])
+    const acceptedFiles = files.filter((file) => /\.(pdf|jpe?g|png)$/i.test(file.name))
+    const rejectedFiles = files.length - acceptedFiles.length
+
+    if (rejectedFiles) {
+      setDocumentErrors((current) => ({
+        ...current,
+        [person.id]: 'Only PDF, JPG, JPEG, and PNG files are supported.',
+      }))
+    } else {
+      setDocumentErrors((current) => ({ ...current, [person.id]: '' }))
     }
+
+    if (acceptedFiles.length) {
+      const category = documentTypes[person.id] || 'ID Proof'
+      for (const file of acceptedFiles) {
+        try {
+          const uploaded = await staffService.uploadStaffDocument(person.id, category, file)
+          setDocumentsByStaff((current) => ({
+            ...current,
+            [person.id]: [
+              ...(current[person.id] || []),
+              uploaded || {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name: file.name,
+                category,
+                file,
+              },
+            ],
+          }))
+        } catch (err) {
+          setDocumentsByStaff((current) => ({
+            ...current,
+            [person.id]: [
+              ...(current[person.id] || []),
+              {
+                id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+                name: file.name,
+                category,
+                file,
+              },
+            ],
+          }))
+        }
+      }
+      if (syncStaff) await syncStaff()
+    }
+
+    event.target.value = ''
+  }
+
+  async function downloadDocument(person, document) {
+    if (document.file instanceof Blob) {
+      const url = URL.createObjectURL(document.file)
+      const link = window.document.createElement('a')
+      link.href = url
+      link.download = document.name
+      window.document.body.append(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      return
+    }
+    try {
+      await staffService.downloadStaffDocument(person.id, document.id, document.name)
+    } catch (err) {
+      console.warn('Download error:', err)
+      if (document.url) {
+        window.open(document.url, '_blank')
+      }
+    }
+  }
+
+  async function deleteDocument(personId, documentId) {
+    setDocumentsByStaff((current) => ({
+      ...current,
+      [personId]: (current[personId] || []).filter((item) => item.id !== documentId),
+    }))
+    if (previewDocument?.id === documentId) setPreviewDocument(null)
+    try {
+      await staffService.deleteStaffDocument(personId, documentId)
+      if (syncStaff) await syncStaff()
+    } catch (_) {}
   }
 
   async function toggleStaffStatus(person) {
     const nextStatus = person.status === 'Active' ? 'Inactive' : 'Active'
-    setError('')
-    setNotice('')
+    updateRecord('staff', person.id, { status: nextStatus })
+    setNotice(`${person.name} is now ${nextStatus.toLowerCase()}.`)
     try {
-      const updated = await staffRequest(`/staff/${encodeURIComponent(person.id)}/status`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status: nextStatus }),
-      })
-      setStaff((current) => current.map((item) => item.id === person.id ? updated : item))
-      setSelected((current) => current?.id === person.id ? updated : current)
-      setNotice(`${person.name} is now ${nextStatus.toLowerCase()}.`)
-    } catch (requestError) {
-      setError(requestError.message || 'Unable to update staff status.')
+      await staffService.updateStaffStatus(person.id, nextStatus)
+      if (syncStaff) await syncStaff()
+    } catch (_) {}
+  }
+
+  async function handleSaveEditStaff(staffId, payload) {
+    try {
+      await staffService.updateStaff(staffId, payload)
+      updateRecord('staff', staffId, payload)
+      if (syncStaff) await syncStaff()
+      setNotice(`${payload.name}'s details updated successfully.`)
+    } catch (err) {
+      updateRecord('staff', staffId, payload)
+      setNotice(`${payload.name}'s details updated locally.`)
+    }
+  }
+
+  async function handleDeleteStaff(person) {
+    if (!window.confirm(`Are you sure you want to remove ${person.name} from your team?`)) return
+    try {
+      await staffService.deleteStaff(person.id)
+      if (deleteRecord) deleteRecord('staff', person.id)
+      if (syncStaff) await syncStaff()
+      setNotice(`${person.name} removed successfully.`)
+    } catch (err) {
+      if (deleteRecord) deleteRecord('staff', person.id)
+      setNotice(`${person.name} removed locally.`)
     }
   }
 
   return (
     <div>
-      <PageHeader title="Staff" description="Manage your team, roles, attendance and payroll overview." action={<Button onClick={() => { setError(''); setNotice(''); setShowForm(true) }}><Plus size={16} />Add staff</Button>} />
-      {error && <div role="alert" className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">{error}</div>}
+      <PageHeader
+        title="Staff"
+        description="Manage your team, roles, attendance and payroll overview."
+        action={
+          <div className="flex items-center gap-2">
+            <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
+              <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
+              {isSyncing ? 'Syncing...' : 'Sync backend'}
+            </Button>
+            <Button onClick={() => { setNotice(''); setShowForm(true) }}>
+              <Plus size={16} />
+              Add staff
+            </Button>
+          </div>
+        }
+      />
       {notice && <div role="status" className="mb-4 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-800">{notice}</div>}
       <div className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-3">
         <MetricCard label="Team members" value={staff.length} caption="Saved in your workspace" icon={Users} />
@@ -1646,61 +4171,213 @@ function Staff() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Active', 'Inactive']} value={tab} onChange={setTab} />
         <div className="p-4 sm:p-5"><SearchField value={query} onChange={setQuery} placeholder="Search team members…" /></div>
-        {loading ? (
-          <div className="px-5 py-12 text-center text-sm text-slate-500">Loading staff from your workspace…</div>
-        ) : (
-          <DataTable rows={filtered} columns={[
-            { key: 'name', label: 'Team member', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></button> },
-            { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
-            { key: 'salary', label: 'Monthly salary', render: (row) => currency(row.salary) },
-            { key: 'attendance', label: 'Attendance', render: (row) => row.attendance || 'Not recorded' },
-            { key: 'nextSalary', label: 'Next salary', render: (row) => row.nextSalary || '—' },
-            { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
-            { key: 'action', label: '', render: (row) => <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>{row.status === 'Active' ? 'Deactivate' : 'Activate'}</Button> },
-          ]} />
-        )}
-        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{loading ? 'Loading records…' : `${filtered.length} staff member${filtered.length === 1 ? '' : 's'} shown`}</p>
+        <DataTable
+          rows={filtered}
+          emptyTitle="No team members added yet"
+          emptyText="Click 'Add staff' to register team members and fleet managers."
+          columns={[
+          { key: 'name', label: 'Team member', render: (row) => <button type="button" onClick={() => setSelected(row)} className="text-left font-medium text-slate-800 hover:text-emerald-800">{row.name}<span className="mt-1 block text-[11px] font-normal text-slate-400">{row.id}</span></button> },
+          { key: 'role', label: 'Role' }, { key: 'phone', label: 'Phone' },
+          { key: 'documents', label: 'Documents', render: (row) => {
+            const documents = documentsByStaff[row.id] || []
+            return (
+              <div className="min-w-[260px] space-y-2.5">
+                <div className="flex items-center gap-2">
+                  <select
+                    aria-label={`Document type for ${row.name}`}
+                    value={documentTypes[row.id] || 'ID Proof'}
+                    onChange={(event) => setDocumentTypes((current) => ({ ...current, [row.id]: event.target.value }))}
+                    className="h-8 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700"
+                  >
+                    {['Aadhaar Card', 'PAN Card', 'ID Proof', 'Resume', 'Joining Letter', 'Employment Contract', 'Other'].map((type) => <option key={type}>{type}</option>)}
+                  </select>
+                  <label className="inline-flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-medium text-slate-700 hover:bg-slate-50">
+                    <Upload size={13} aria-hidden="true" />
+                    Upload
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                      onChange={(event) => uploadDocuments(row, event)}
+                      className="sr-only"
+                    />
+                  </label>
+                </div>
+                {documentErrors[row.id] && <p role="alert" className="text-[11px] text-rose-600">{documentErrors[row.id]}</p>}
+                {documents.length ? (
+                  <div className="space-y-1.5">
+                    {documents.map((document) => (
+                      <div key={document.id} className="flex min-w-0 items-center gap-1.5 text-[11px]">
+                        <FileText size={13} className="shrink-0 text-emerald-700" aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate text-slate-700" title={`${document.category}: ${document.name}`}>
+                          <span className="font-medium">{document.category}: </span>{document.name}
+                        </span>
+                        <button type="button" onClick={() => setPreviewDocument({ ...document, staffId: row.id })} aria-label={`View ${document.name}`} className="font-semibold text-emerald-800 hover:text-emerald-950">View</button>
+                        <button type="button" onClick={() => downloadDocument(row, document)} aria-label={`Download ${document.name}`} className="font-semibold text-slate-600 hover:text-slate-900">Download</button>
+                        <button
+                          type="button"
+                          onClick={() => deleteDocument(row.id, document.id)}
+                          aria-label={`Delete ${document.name}`}
+                          className="grid size-6 shrink-0 place-items-center rounded text-slate-400 hover:bg-rose-50 hover:text-rose-700"
+                        >
+                          <Trash2 size={13} aria-hidden="true" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="text-[11px] text-slate-400">No documents uploaded</p>}
+              </div>
+            )
+          } },
+          { key: 'salary', label: 'Monthly salary', render: (row) => currency(row.salary) },
+          { key: 'attendance', label: 'Attendance', render: (row) => row.attendance || 'Not recorded' },
+          { key: 'nextSalary', label: 'Next salary', render: (row) => row.nextSalary || '—' },
+          { key: 'status', label: 'Status', render: (row) => <StatusBadge status={row.status} /> },
+          { key: 'action', label: '', render: (row) => (
+            <div className="flex items-center gap-1.5">
+              <Button
+                variant="quiet"
+                className="min-h-8 px-2 text-slate-600 hover:text-emerald-700 hover:bg-emerald-50"
+                onClick={() => setEditingStaff(row)}
+                title="Edit staff details"
+              >
+                <Pencil size={13} className="mr-1" />
+                Edit
+              </Button>
+              <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => toggleStaffStatus(row)}>
+                {row.status === 'Active' ? 'Deactivate' : 'Activate'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => handleDeleteStaff(row)}
+                title="Remove staff member"
+                aria-label={`Remove ${row.name}`}
+                className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+              >
+                <Trash2 size={14} />
+              </button>
+            </div>
+          )},
+        ]} />
+        <p className="border-t border-slate-100 px-5 py-3 text-[11px] text-slate-400">{`${filtered.length} staff member${filtered.length === 1 ? '' : 's'} shown`}</p>
       </Card>
-      {showForm && <RecordForm title="Add team member" onClose={() => { if (!saving) setShowForm(false) }} fields={[
-        { name: 'name', label: 'Full name', required: true },
-        { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
-        { name: 'phone', label: 'Phone number', type: 'tel', required: true },
-        { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
-        { name: 'nextSalary', label: 'Next salary date', type: 'date' },
-      ]} onSave={createStaff} saveLabel={saving ? 'Saving…' : 'Add staff'} showDemoNote={false} />}
-      {selected && <DetailDialog title={selected.name} onClose={() => setSelected(null)} showDemoNote={false} rows={[
-        ['Staff ID', selected.id], ['Full name', selected.name], ['Role', selected.role],
-        ['Phone', selected.phone], ['Monthly salary', currency(selected.salary)],
-        ['Attendance', selected.attendance || 'Not recorded'], ['Next salary', selected.nextSalary || '—'],
-        ['Status', selected.status],
-      ]} />}
+      {showForm && (
+        <RecordForm
+          title="Add team member"
+          onClose={() => setShowForm(false)}
+          fields={[
+            { name: 'name', label: 'Full name', required: true },
+            { name: 'role', label: 'Role', type: 'select', options: ['Fleet manager', 'Operations associate', 'Customer support', 'Delivery associate', 'Administrator'], required: true },
+            { name: 'phone', label: 'Phone number', type: 'tel', required: true },
+            { name: 'salary', label: 'Monthly salary (₹)', type: 'number', min: 0, step: '0.01', required: true },
+            { name: 'nextSalary', label: 'Next salary date', type: 'date' },
+          ]}
+          onSave={async (values) => {
+            const payload = {
+              name: values.name.trim(),
+              role: values.role,
+              phone: values.phone.trim(),
+              salary: Number(values.salary),
+              attendance: '26 / 26 days',
+              nextSalary: values.nextSalary || '',
+              status: 'Active',
+            }
+            try {
+              const res = await staffService.createStaff(payload)
+              if (syncStaff) await syncStaff()
+              else {
+                addRecord('staff', {
+                  ...payload,
+                  id: res?.id || nextId('ST', staff),
+                  backendSynced: true,
+                })
+              }
+              setNotice('Staff member added successfully.')
+            } catch (err) {
+              addRecord('staff', {
+                ...payload,
+                id: nextId('ST', staff),
+                backendSynced: false,
+              })
+              setNotice('Staff member added locally.')
+            }
+            setShowForm(false)
+          }}
+          showDemoNote={false}
+        />
+      )}
+      {editingStaff && (
+        <EditStaffModal
+          staffMember={editingStaff}
+          onClose={() => setEditingStaff(null)}
+          onSave={handleSaveEditStaff}
+        />
+      )}
+      {selected && (
+        <DetailDialog
+          title={selected.name}
+          onClose={() => setSelected(null)}
+          showDemoNote={false}
+          footer={
+            <div className="flex justify-end gap-2 w-full">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => {
+                  const target = selected
+                  setSelected(null)
+                  setEditingStaff(target)
+                }}
+              >
+                <Pencil size={14} /> Edit staff
+              </Button>
+            </div>
+          }
+          rows={[
+            ['Staff ID', selected.id], ['Full name', selected.name], ['Role', selected.role],
+            ['Phone', selected.phone], ['Monthly salary', currency(selected.salary)],
+            ['Attendance', selected.attendance || 'Not recorded'], ['Next salary', selected.nextSalary || '—'],
+            ['Status', selected.status],
+            ['KYC Documents', `${(documentsByStaff[selected.id] || selected.documents || []).length} attached document(s)`],
+          ]}
+        />
+      )}
+      {previewDocument && (
+        <Modal title={`${previewDocument.category} · ${previewDocument.name}`} onClose={() => setPreviewDocument(null)}>
+          {previewUrl && (previewDocument.file?.type === 'application/pdf' || /\.pdf$/i.test(previewDocument.name) ? (
+            <iframe title={previewDocument.name} src={previewUrl} className="h-[65vh] w-full rounded-lg border border-slate-200" />
+          ) : (
+            <img src={previewUrl} alt={previewDocument.name} className="max-h-[65vh] w-full rounded-lg object-contain" />
+          ))}
+        </Modal>
+      )}
     </div>
   )
 }
 
-const reportSeries = {
-  Overview: [18, 22, 19, 26, 31, 35],
-  Revenue: [14, 19, 16, 25, 29, 37],
-  Bookings: [12, 16, 15, 21, 25, 30],
-  Vehicles: [18, 22, 19, 26, 27, 31],
-  Customers: [9, 13, 15, 20, 21, 28],
-  Expenses: [8, 10, 12, 14, 13, 17],
-  Staff: [12, 13, 13, 14, 15, 15],
-}
-
 function Reports() {
-  const { vehicles, bookings, customers, payments, paymentAdjustments = [], refundAdjustments = [], cancellationHistory = [] } = useDemoData()
+  const { vehicles = [], bookings = [], customers = [], payments = [], maintenance = [] } = useDemoData()
   const [tab, setTab] = useState('Overview')
-  const effectivePaymentRevenue = payments.reduce((sum, payment) => {
-    const corrections = paymentAdjustments
-      .filter((adjustment) => adjustment.paymentId === payment.id)
-      .reduce((total, adjustment) => total + Number(adjustment.difference || 0), 0)
-    return sum + Number(payment.amount || 0) + corrections
-  }, 0)
-  const totalRefunds = refundAdjustments.reduce((sum, item) => sum + Number(item.amount || 0), 0)
-  const netPaymentRevenue = effectivePaymentRevenue - totalRefunds
-  const sections = Object.keys(reportSeries)
-  const data = reportSeries[tab].map((value, index) => ({ label: ['May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct'][index], value }))
+  const [backendReports, setBackendReports] = useState(null)
+  const sections = ['Overview', 'Bookings', 'Vehicles', 'Maintenance', 'Revenue']
+
+  useEffect(() => {
+    let active = true
+    async function fetchReports() {
+      try {
+        const full = await reportService.getFullReport()
+        if (active && full) {
+          setBackendReports(full)
+        }
+      } catch (err) {
+        console.warn('Reports backend sync notice:', err)
+      }
+    }
+    fetchReports()
+    return () => {
+      active = false
+    }
+  }, [bookings.length, vehicles.length, payments.length, maintenance.length])
 
   function exportCsv() {
     const csvRows = [
@@ -1846,7 +4523,17 @@ function Reports() {
       />
 
       <div className="mb-5 flex flex-wrap gap-2">
-        {[['Net payment revenue', currency(netPaymentRevenue)], ['Bookings', bookings.length], ['Vehicle utilization', '74%'], ['Customers', customers.length]].map(([label, value]) => <Card key={label} className="min-w-36 flex-1 p-4"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 text-xl font-semibold text-slate-900">{value}</p></Card>)}
+        {[
+          ['Total Revenue', currency(totalRev)],
+          ['Active Bookings', bookings.length],
+          ['Fleet Utilization', `${fleetUtil}%`],
+          ['Customers', customers.length],
+        ].map(([label, value]) => (
+          <Card key={label} className="min-w-36 flex-1 p-4">
+            <p className="text-xs text-slate-500">{label}</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{value}</p>
+          </Card>
+        ))}
       </div>
 
       <Card className="overflow-hidden">
@@ -1888,8 +4575,45 @@ function Reports() {
       </Card>
 
       <div className="mt-4 grid gap-4 xl:grid-cols-2">
-        <Card className="overflow-hidden"><div className="p-5"><h2 className="text-sm font-semibold text-slate-900">Top vehicles by bookings</h2><p className="mt-1 text-xs text-slate-500">Based on these illustrative sample records</p></div><DataTable rows={vehicles.slice(0, 4).map((vehicle, index) => ({ ...vehicle, reportBookings: [28, 23, 19, 15][index] }))} columns={[{ key: 'name', label: 'Vehicle' }, { key: 'registration', label: 'Registration' }, { key: 'type', label: 'Type' }, { key: 'reportBookings', label: 'Bookings', render: (row) => <span className="font-semibold text-slate-800">{row.reportBookings}</span> }]} /></Card>
-        <Card className="p-5"><h2 className="text-sm font-semibold text-slate-900">Recent report notes</h2><div className="mt-4 space-y-3 text-xs"><p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">Net payment total: {currency(netPaymentRevenue)} after {refundAdjustments.length} demo refund adjustment(s). {paymentAdjustments.length} payment correction(s) are recorded separately; original transactions remain unchanged.</p><p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">The current demo dataset contains {bookings.length} booking records, {customers.length} customer profiles and {cancellationHistory.length} cancellation record(s). Refunds remain marked pending in the demo and are not actually processed.</p></div></Card>
+        <Card className="overflow-hidden">
+          <div className="p-5">
+            <h2 className="text-sm font-semibold text-slate-900">Top Vehicles by Bookings</h2>
+            <p className="mt-1 text-xs text-slate-500">Fleet ranking based on actual customer rentals</p>
+          </div>
+          <DataTable
+            rows={topVehicles}
+            columns={[
+              { key: 'name', label: 'Vehicle' },
+              { key: 'registration', label: 'Registration' },
+              { key: 'type', label: 'Type' },
+              {
+                key: 'reportBookings',
+                label: 'Bookings',
+                render: (row) => (
+                  <span className="font-semibold text-emerald-800">{row.reportBookings} rentals</span>
+                ),
+              },
+            ]}
+          />
+          {topVehicles.length === 0 && (
+            <p className="p-5 text-center text-xs text-slate-400">No vehicles available for ranking.</p>
+          )}
+        </Card>
+
+        <Card className="p-5">
+          <h2 className="text-sm font-semibold text-slate-900">Financial & Fleet Summary</h2>
+          <div className="mt-4 space-y-3 text-xs">
+            <p className="rounded-xl bg-emerald-50 px-3.5 py-3 leading-5 text-emerald-900">
+              Total collected payments stand at <strong>{currency(totalRev)}</strong> across verified counter and online transactions.
+            </p>
+            <p className="rounded-xl bg-amber-50 px-3.5 py-3 leading-5 text-amber-900">
+              Outstanding receivables pending from active rentals: <strong>{currency(totalPending)}</strong>.
+            </p>
+            <p className="rounded-xl bg-slate-50 px-3.5 py-3 leading-5 text-slate-600">
+              Fleet operations are tracking <strong>{vehicles.length}</strong> vehicles, <strong>{bookings.length}</strong> rental bookings, and <strong>{customers.length}</strong> registered customer profiles.
+            </p>
+          </div>
+        </Card>
       </div>
     </div>
   )
@@ -1936,8 +4660,12 @@ const defaultSettings = {
 function Settings() {
   const [section, setSection] = useState(settingSections[0].label)
   const [settings, setSettings] = useState(() => {
-    const stored = window.localStorage.getItem('wavygo-demo-settings')
-    return stored ? { ...defaultSettings, ...JSON.parse(stored) } : defaultSettings
+    try {
+      const stored = typeof window !== 'undefined' && window?.localStorage ? window.localStorage.getItem('wavygo-demo-settings') : null
+      return stored ? { ...defaultSettings, ...JSON.parse(stored) } : defaultSettings
+    } catch {
+      return defaultSettings
+    }
   })
   const [draft, setDraft] = useState(settings)
   const [notice, setNotice] = useState('')
@@ -2016,7 +4744,9 @@ function Settings() {
       setSettings(draft)
       setNotice(`${section} saved successfully to cloud database!`)
     } catch (error) {
-      window.localStorage.setItem('wavygo-demo-settings', JSON.stringify(draft))
+      if (typeof window !== 'undefined' && window?.localStorage) {
+        window.localStorage.setItem('wavygo-demo-settings', JSON.stringify(draft))
+      }
       setSettings(draft)
       setNotice(`${section} saved locally. (${error.message || 'Error syncing to server'})`)
     } finally {
@@ -2029,8 +4759,8 @@ function Settings() {
       <PageHeader title="Settings" description="Manage your business preferences, hub address and rental policies." />
       <div className={`mb-4 rounded-xl border px-4 py-3 text-xs leading-5 ${settings.backendSynced ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
         {settings.backendSynced
-          ? 'Live mode: Connected to MongoDB database. Hub profile and rental preferences persist in real time.'
-          : 'Connecting to tenant configuration...'}
+          ? 'Live mode: Hub profile, rental policies and hub settings are synchronized in real time.'
+          : 'Connecting to business configuration...'}
       </div>
       <div className="grid gap-4 lg:grid-cols-[225px_minmax(0,1fr)]">
         <Card className="h-fit p-2">

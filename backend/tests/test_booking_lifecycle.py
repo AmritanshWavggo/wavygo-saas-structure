@@ -58,7 +58,7 @@ def test_full_lifecycle_and_payment_status_is_independent(lifecycle_db):
     assert completed.status == "Completed" and completed.outstanding == 1050.0
     payment_service.record_payment(PaymentCreate(booking_id="BK-LIFE", amount=1050, method="Cash", idempotency_key="after-complete"), tenant)
     assert db["bookings"].find_one({"id": "BK-LIFE"})["paid"] == 1050.0
-    assert db["vehicles"].find_one({"id": "VH-LIFE"})["fleetAvailability"] == "Available"
+    assert db["vehicles"].find_one({"id": "VH-LIFE"})["fleetAvailability"] == "Under Review"
 
 
 def test_invalid_repeated_cancelled_and_cross_tenant_transitions(lifecycle_db):
@@ -166,3 +166,20 @@ def test_creation_records_advance_once_and_requires_non_cash_reference(lifecycle
     with pytest.raises(HTTPException) as error:
         booking_service.create_offline_booking(missing_reference, tenant)
     assert error.value.status_code == 422
+
+
+def test_returned_vehicle_can_be_handed_over_for_new_booking(lifecycle_db):
+    db, tenant = lifecycle_db
+    # First booking: Handover, then return (vehicle moves to 'Under Review', booking is 'Returned')
+    add_booking(db, tenant, booking_id="BK-PAST")
+    booking_service.handover_booking("BK-PAST", LifecycleActionRequest(), tenant)
+    booking_service.return_booking("BK-PAST", ReturnBookingRequest(), tenant)
+    assert db["bookings"].find_one({"id": "BK-PAST"})["status"] == "Returned"
+    assert db["vehicles"].find_one({"id": "VH-LIFE"})["availability"] == "Under Review"
+
+    # Second booking on the same vehicle: Handover must succeed and not be blocked by BK-PAST
+    add_booking(db, tenant, booking_id="BK-NEXT")
+    next_booking = booking_service.handover_booking("BK-NEXT", LifecycleActionRequest(), tenant)
+    assert next_booking.status == "Active"
+    assert db["vehicles"].find_one({"id": "VH-LIFE"})["availability"] == "Rented"
+

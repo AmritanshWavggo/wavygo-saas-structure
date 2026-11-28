@@ -24,7 +24,7 @@ import {
   Loader2,
 } from 'lucide-react'
 
-const AVAILABILITY_OPTIONS = ['Available', 'Rented', 'Maintenance']
+const AVAILABILITY_OPTIONS = ['Available', 'Rented', 'Under Review', 'Maintenance']
 
 function VehicleArt({ vehicle, small = false }) {
   const [imageError, setImageError] = useState(false)
@@ -173,12 +173,14 @@ function AvailabilityDropdown({ vehicle, onSelect }) {
             const optionStyles = {
               Available: 'text-emerald-700',
               Rented: 'text-sky-700',
+              'Under Review': 'text-purple-700',
               Maintenance: 'text-amber-700',
             }
 
             const dotStyles = {
               Available: 'bg-emerald-500',
               Rented: 'bg-sky-500',
+              'Under Review': 'bg-purple-500',
               Maintenance: 'bg-amber-500',
             }
 
@@ -254,7 +256,14 @@ function AvailabilityDropdown({ vehicle, onSelect }) {
 
 function Vehicles() {
   const navigate = useNavigate()
-  const { vehicles, updateRecord } = useDemoData()
+  const {
+    vehicles = [],
+    updateRecord,
+    deleteRecord,
+    syncVehicles = () => {},
+    vehiclesLoading = false,
+    vehiclesError = null,
+  } = useDemoData()
 
   const [activeTab, setActiveTab] = useState('All vehicles')
   const [search, setSearch] = useState('')
@@ -266,10 +275,202 @@ function Vehicles() {
   const [editFormData, setEditFormData] = useState({})
   const [editError, setEditError] = useState('')
   const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [vehicleToDelete, setVehicleToDelete] = useState(null)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [notice, setNotice] = useState('')
   const [page, setPage] = useState(1)
 
   const pageSize = 8
+
+  function handleOpenEdit(vehicle) {
+    setEditingVehicle(vehicle)
+    const rateVal =
+      vehicle.price != null
+        ? Number(vehicle.price)
+        : vehicle.dailyRate != null
+          ? Number(vehicle.dailyRate)
+          : 0
+    const minDaysVal =
+      vehicle.minimumDays != null ? Math.max(1, Number(vehicle.minimumDays)) : 1
+
+    setEditFormData({
+      makeModel: vehicle.name || vehicle.makeModel || '',
+      registration: vehicle.registration || vehicle.registrationNumber || '',
+      type: vehicle.type || 'Motorcycle',
+      fuel: vehicle.fuel || 'Petrol',
+      year: vehicle.year ? String(vehicle.year) : '2024',
+      transmission: vehicle.transmission || 'Manual',
+      color: vehicle.color || '',
+      engineCapacity:
+        vehicle.engineCapacity != null ? String(vehicle.engineCapacity) : '',
+      seats: vehicle.seats != null ? String(vehicle.seats) : '2',
+      dailyRate: rateVal > 0 ? String(rateVal) : '',
+      minimumDays: String(minDaysVal),
+      minRentalPackageAmount:
+        rateVal > 0 ? String(Math.round(rateVal * minDaysVal)) : '',
+      securityDeposit:
+        vehicle.securityDeposit != null
+          ? String(vehicle.securityDeposit)
+          : '0',
+      fleetAvailability:
+        vehicle.availability || vehicle.fleetAvailability || 'Available',
+      showOnWavygo: Boolean(isListedOnWavyGo(vehicle)),
+      pickupAddress:
+        vehicle.location ||
+        vehicle.pickupAddress ||
+        vehicle.pickupLocation?.address ||
+        '',
+      pickupNotes: vehicle.pickupNotes || '',
+    })
+    setEditError('')
+  }
+
+  function handleEditFieldChange(field, value) {
+    setEditFormData((prev) => {
+      const next = { ...prev, [field]: value }
+      if (field === 'minimumDays') {
+        const days = Math.max(1, parseInt(value, 10) || 1)
+        const rate = parseFloat(prev.dailyRate) || 0
+        if (rate > 0) {
+          next.minRentalPackageAmount = String(Math.round(rate * days))
+        }
+      } else if (field === 'minRentalPackageAmount') {
+        const pkgAmt = parseFloat(value) || 0
+        const days = Math.max(1, parseInt(prev.minimumDays, 10) || 1)
+        if (pkgAmt > 0) {
+          next.dailyRate = String(Math.round(pkgAmt / days))
+        }
+      } else if (field === 'dailyRate') {
+        const rate = parseFloat(value) || 0
+        const days = Math.max(1, parseInt(prev.minimumDays, 10) || 1)
+        if (rate > 0) {
+          next.minRentalPackageAmount = String(Math.round(rate * days))
+        }
+      }
+      return next
+    })
+    if (editError) setEditError('')
+  }
+
+  async function handleSaveEdit(e) {
+    if (e) e.preventDefault()
+    if (!editingVehicle) return
+
+    if (!editFormData.makeModel?.trim()) {
+      setEditError('Vehicle name / model is required.')
+      return
+    }
+    if (!editFormData.registration?.trim()) {
+      setEditError('Registration number is required.')
+      return
+    }
+    const rateNum = Number(editFormData.dailyRate)
+    if (!editFormData.dailyRate || Number.isNaN(rateNum) || rateNum <= 0) {
+      setEditError('Daily rate must be greater than ₹0.')
+      return
+    }
+
+    setIsSavingEdit(true)
+    setEditError('')
+
+    try {
+      const updates = {
+        makeModel: editFormData.makeModel.trim(),
+        registration: editFormData.registration.trim().toUpperCase(),
+        type: editFormData.type,
+        fuel: editFormData.fuel,
+        transmission: editFormData.transmission,
+        fleetAvailability: editFormData.fleetAvailability,
+        showOnWavygo: Boolean(editFormData.showOnWavygo),
+      }
+
+      if (editFormData.year) updates.year = parseInt(editFormData.year, 10)
+      if (editFormData.color?.trim()) updates.color = editFormData.color.trim()
+      if (editFormData.engineCapacity)
+        updates.engineCapacity = parseInt(editFormData.engineCapacity, 10)
+      if (editFormData.seats) updates.seats = parseInt(editFormData.seats, 10)
+      if (editFormData.dailyRate)
+        updates.dailyRate = parseFloat(editFormData.dailyRate)
+      if (editFormData.minimumDays)
+        updates.minimumDays = parseInt(editFormData.minimumDays, 10)
+      if (editFormData.securityDeposit !== '')
+        updates.securityDeposit = parseFloat(editFormData.securityDeposit || 0)
+      if (editFormData.pickupAddress?.trim())
+        updates.pickupAddress = editFormData.pickupAddress.trim()
+      if (editFormData.pickupNotes?.trim())
+        updates.pickupNotes = editFormData.pickupNotes.trim()
+
+      await vehicleService.updateVehicle(editingVehicle.id, updates)
+
+      updateRecord('vehicles', editingVehicle.id, {
+        name: updates.makeModel,
+        makeModel: updates.makeModel,
+        registration: updates.registration,
+        type: updates.type,
+        fuel: updates.fuel,
+        transmission: updates.transmission,
+        year: updates.year,
+        color: updates.color,
+        engineCapacity: updates.engineCapacity,
+        seats: updates.seats,
+        dailyRate: updates.dailyRate,
+        price: updates.dailyRate,
+        minimumDays: updates.minimumDays,
+        securityDeposit: updates.securityDeposit,
+        availability: updates.fleetAvailability,
+        fleetAvailability: updates.fleetAvailability,
+        showOnWavygo: updates.showOnWavygo,
+        status: updates.showOnWavygo ? 'Online' : 'Offline',
+        location: updates.pickupAddress || editingVehicle.location,
+        pickupAddress: updates.pickupAddress || editingVehicle.pickupAddress,
+        pickupNotes: updates.pickupNotes,
+      })
+
+      if (typeof syncVehicles === 'function') {
+        await syncVehicles({ force: true })
+      }
+
+      setNotice(`Vehicle "${updates.makeModel}" updated successfully.`)
+      setEditingVehicle(null)
+      if (selectedVehicle?.id === editingVehicle.id) {
+        setSelectedVehicle((prev) => ({
+          ...prev,
+          ...updates,
+          name: updates.makeModel,
+          price: updates.dailyRate,
+          availability: updates.fleetAvailability,
+          location: updates.pickupAddress || prev.location,
+        }))
+      }
+    } catch (err) {
+      console.error('Error updating vehicle:', err)
+      setEditError(err?.message || 'Failed to update vehicle.')
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
+
+  async function handleDeleteVehicle() {
+    if (!vehicleToDelete) return
+    setIsDeleting(true)
+    try {
+      await vehicleService.deleteVehicle(vehicleToDelete.id)
+      deleteRecord('vehicles', vehicleToDelete.id)
+      if (typeof syncVehicles === 'function') {
+        await syncVehicles({ force: true })
+      }
+      setNotice(`Vehicle "${vehicleToDelete.name}" deleted successfully.`)
+      setVehicleToDelete(null)
+      if (selectedVehicle?.id === vehicleToDelete.id) {
+        setSelectedVehicle(null)
+      }
+    } catch (err) {
+      console.error('Error deleting vehicle:', err)
+      setNotice(err?.message || 'Failed to delete vehicle.')
+    } finally {
+      setIsDeleting(false)
+    }
+  }
 
   const filteredVehicles = useMemo(() => {
     const query = search.trim().toLowerCase()
@@ -330,28 +531,53 @@ function Vehicles() {
     if (!vehicle) return
 
     const listed = isListedOnWavyGo(vehicle)
+    const nextStatus = !listed
 
     updateRecord('vehicles', id, {
-      show_on_wavygo: !listed,
+      show_on_wavygo: nextStatus,
+      showOnWavygo: nextStatus,
+      status: nextStatus ? 'Online' : 'Offline',
     })
 
-    setPage(1)
-    setNotice(
-      'Preview only: no vehicle listing API is configured, so this change is not saved to WavyGo.'
-    )
+    try {
+      await vehicleService.toggleShowOnWavygo(id, nextStatus)
+      if (typeof syncVehicles === 'function') {
+        syncVehicles({ force: true })
+      }
+      setNotice(
+        `Vehicle "${vehicle.name}" listing on WavyGo set to ${nextStatus ? 'Online' : 'Offline'}.`
+      )
+    } catch (err) {
+      console.warn('toggleShowOnWavygo error:', err)
+      setNotice(
+        `Listing updated locally to ${nextStatus ? 'Online' : 'Offline'}.`
+      )
+    }
   }
 
-  function handleAvailabilityChange(vehicleId, availability) {
-    const result = updateRecord('vehicles', vehicleId, { availability })
+  async function handleAvailabilityChange(vehicleId, availability) {
+    const result = updateRecord('vehicles', vehicleId, {
+      availability,
+      fleetAvailability: availability,
+    })
 
     if (!result?.success) {
       setNotice(result?.error || 'Unable to update vehicle availability.')
       return
     }
 
-    setNotice(
-      `Preview updated: vehicle availability changed to ${availability}. This change is limited to this browser session.`
-    )
+    try {
+      await vehicleService.updateVehicle(vehicleId, {
+        fleetAvailability: availability,
+      })
+      if (typeof syncVehicles === 'function') {
+        syncVehicles({ force: true })
+      }
+      setNotice(`Vehicle availability updated to ${availability}.`)
+    } catch (err) {
+      console.warn('updateVehicle availability error:', err)
+      setNotice(`Vehicle availability updated locally to ${availability}.`)
+    }
   }
 
   function resetFilters() {
@@ -421,7 +647,7 @@ function Vehicles() {
               </h2>
 
               <p className="mt-1 text-xs text-slate-500">
-                Preview fleet · listing updates are not connected to an API
+                Manage your fleet availability, pricing and vehicle details
               </p>
             </div>
 
@@ -671,11 +897,7 @@ function Vehicles() {
 
                           <button
                             type="button"
-                            onClick={() =>
-                              setNotice(
-                                'Vehicle editing is unavailable until a vehicle update API is provided.'
-                              )
-                            }
+                            onClick={() => handleOpenEdit(vehicle)}
                             className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
                             aria-label={`Edit ${vehicle.name}`}
                           >
@@ -685,11 +907,7 @@ function Vehicles() {
 
                           <button
                             type="button"
-                            onClick={() =>
-                              setNotice(
-                                'Vehicle deletion is unavailable until a vehicle delete API is provided.'
-                              )
-                            }
+                            onClick={() => setVehicleToDelete(vehicle)}
                             className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-semibold text-rose-600 hover:bg-rose-50"
                             aria-label={`Delete ${vehicle.name}`}
                           >
@@ -777,14 +995,14 @@ function Vehicles() {
       <div
         className={`flex items-center gap-3 rounded-xl border px-4 py-3 text-xs leading-5 ${
           notice
-            ? 'border-amber-200 bg-amber-50 text-amber-900'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
             : 'border-slate-200/70 bg-white/70 text-slate-500'
         }`}
       >
         <CircleHelp size={16} className="shrink-0 text-emerald-700" />
         <p>
           {notice ||
-            'Preview mode: this screen uses workspace sample data. Availability and listing changes only update this browser session; no vehicle API is configured.'}
+            'Fleet management: vehicles and availability are live synchronized with your WavyGo fleet.'}
         </p>
       </div>
 
@@ -925,14 +1143,485 @@ function Vehicles() {
               )}
             </section>
 
-            <button
-              type="button"
-              onClick={() => setSelectedVehicle(null)}
-              className="mt-5 h-10 w-full rounded-xl bg-emerald-800 text-sm font-semibold text-white hover:bg-emerald-900"
-            >
-              Done
-            </button>
+            <div className="mt-5 flex flex-wrap items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  const target = selectedVehicle
+                  setSelectedVehicle(null)
+                  setVehicleToDelete(target)
+                }}
+                className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-rose-200 px-3.5 text-xs font-semibold text-rose-600 hover:bg-rose-50"
+              >
+                <Trash2 size={14} />
+                Delete
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const target = selectedVehicle
+                  setSelectedVehicle(null)
+                  handleOpenEdit(target)
+                }}
+                className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-slate-200 px-3.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <Pencil size={14} />
+                Edit Vehicle
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedVehicle(null)}
+                className="h-10 rounded-xl bg-emerald-800 px-5 text-sm font-semibold text-white hover:bg-emerald-900"
+              >
+                Close
+              </button>
+            </div>
           </article>
+        </div>
+      )}
+
+      {editingVehicle && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+          onClick={() => !isSavingEdit && setEditingVehicle(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-vehicle-title"
+            onClick={(e) => e.stopPropagation()}
+            className="flex max-h-[92vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <div className="grid size-10 place-items-center rounded-xl bg-emerald-50 text-emerald-800">
+                  <Pencil size={18} />
+                </div>
+                <div>
+                  <h2
+                    id="edit-vehicle-title"
+                    className="text-base font-semibold text-slate-900"
+                  >
+                    Edit Vehicle
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    {editingVehicle.name} •{' '}
+                    {editingVehicle.registration || 'No Reg'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isSavingEdit}
+                onClick={() => setEditingVehicle(null)}
+                className="grid size-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 disabled:opacity-40"
+              >
+                <X size={17} />
+              </button>
+            </div>
+
+            {/* Error Message */}
+            {editError && (
+              <div className="mx-6 mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-medium text-rose-700">
+                {editError}
+              </div>
+            )}
+
+            {/* Body */}
+            <form
+              onSubmit={handleSaveEdit}
+              className="flex-1 space-y-5 overflow-y-auto px-6 py-4"
+            >
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Basic Details
+                </h3>
+                <div className="mt-2.5 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Make & Model <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={editFormData.makeModel || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('makeModel', e.target.value)
+                      }
+                      placeholder="e.g. Royal Enfield Classic 350"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Registration Number <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={editFormData.registration || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange(
+                          'registration',
+                          e.target.value.toUpperCase()
+                        )
+                      }
+                      placeholder="e.g. DL 01 AB 1234"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm uppercase text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Vehicle Type
+                    </label>
+                    <select
+                      value={editFormData.type || 'Motorcycle'}
+                      onChange={(e) =>
+                        handleEditFieldChange('type', e.target.value)
+                      }
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      <option value="Motorcycle">Motorcycle</option>
+                      <option value="Scooter">Scooter</option>
+                      <option value="Electric">Electric</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Fuel Type
+                    </label>
+                    <select
+                      value={editFormData.fuel || 'Petrol'}
+                      onChange={(e) =>
+                        handleEditFieldChange('fuel', e.target.value)
+                      }
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      <option value="Petrol">Petrol</option>
+                      <option value="Diesel">Diesel</option>
+                      <option value="Electric">Electric</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Transmission
+                    </label>
+                    <select
+                      value={editFormData.transmission || 'Manual'}
+                      onChange={(e) =>
+                        handleEditFieldChange('transmission', e.target.value)
+                      }
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      <option value="Manual">Manual</option>
+                      <option value="Automatic">Automatic</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Model Year
+                    </label>
+                    <input
+                      type="number"
+                      min="2000"
+                      max="2030"
+                      value={editFormData.year || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('year', e.target.value)
+                      }
+                      placeholder="2024"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Color
+                    </label>
+                    <input
+                      type="text"
+                      value={editFormData.color || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('color', e.target.value)
+                      }
+                      placeholder="e.g. Matte Black"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Engine Capacity (cc)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="10000"
+                      value={editFormData.engineCapacity || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('engineCapacity', e.target.value)
+                      }
+                      placeholder="e.g. 350"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Pricing & Rental Policy
+                </h3>
+                <div className="mt-2.5 grid grid-cols-1 gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Min Rental Days <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="365"
+                      value={editFormData.minimumDays || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('minimumDays', e.target.value)
+                      }
+                      placeholder="1"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Min Package Amount (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="any"
+                      value={editFormData.minRentalPackageAmount || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('minRentalPackageAmount', e.target.value)
+                      }
+                      placeholder="1500"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Daily Rate (₹) <span className="text-rose-500">*</span>
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      step="any"
+                      required
+                      value={editFormData.dailyRate || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('dailyRate', e.target.value)
+                      }
+                      placeholder="500"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Security Deposit (₹)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={editFormData.securityDeposit || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('securityDeposit', e.target.value)
+                      }
+                      placeholder="0"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 rounded-xl border border-emerald-100 bg-emerald-50/70 p-3 text-xs text-emerald-900">
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>Active Rental Calculation:</span>
+                    <span className="font-mono text-emerald-800">
+                      ₹{Number(editFormData.dailyRate || 0).toLocaleString('en-IN')} / day × {Number(editFormData.minimumDays || 1)} days = ₹{(Number(editFormData.dailyRate || 0) * Number(editFormData.minimumDays || 1)).toLocaleString('en-IN')} min booking total
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                  Status & Location
+                </h3>
+                <div className="mt-2.5 grid grid-cols-1 gap-3.5 sm:grid-cols-2">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Fleet Availability
+                    </label>
+                    <select
+                      value={editFormData.fleetAvailability || 'Available'}
+                      onChange={(e) =>
+                        handleEditFieldChange(
+                          'fleetAvailability',
+                          e.target.value
+                        )
+                      }
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    >
+                      <option value="Available">Available</option>
+                      <option value="Rented">Rented</option>
+                      <option value="Under Review">Under Review</option>
+                      <option value="Maintenance">Maintenance</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center pt-5">
+                    <label className="relative inline-flex cursor-pointer items-center gap-3">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(editFormData.showOnWavygo)}
+                        onChange={(e) =>
+                          handleEditFieldChange(
+                            'showOnWavygo',
+                            e.target.checked
+                          )
+                        }
+                        className="peer sr-only"
+                      />
+                      <div className="h-6 w-11 rounded-full bg-slate-300 transition-colors after:absolute after:start-[2px] after:top-[2px] after:h-5 after:w-5 after:rounded-full after:bg-white after:shadow after:transition-all after:content-[''] peer-checked:bg-emerald-700 peer-checked:after:translate-x-full peer-focus:outline-none"></div>
+                      <span className="text-xs font-semibold text-slate-700">
+                        Show on WavyGo marketplace
+                      </span>
+                    </label>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Pickup Address / Location
+                    </label>
+                    <input
+                      type="text"
+                      value={editFormData.pickupAddress || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('pickupAddress', e.target.value)
+                      }
+                      placeholder="e.g. Connaught Place Hub, New Delhi"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Pickup Notes
+                    </label>
+                    <input
+                      type="text"
+                      value={editFormData.pickupNotes || ''}
+                      onChange={(e) =>
+                        handleEditFieldChange('pickupNotes', e.target.value)
+                      }
+                      placeholder="e.g. Near metro gate 4, ask for Vikram"
+                      className="mt-1 h-10 w-full rounded-xl border border-slate-200 px-3 text-sm text-slate-800 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="flex items-center justify-end gap-3 border-t border-slate-100 pt-4">
+                <button
+                  type="button"
+                  disabled={isSavingEdit}
+                  onClick={() => setEditingVehicle(null)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEdit}
+                  className="inline-flex items-center gap-2 rounded-xl bg-emerald-800 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-900 disabled:opacity-60"
+                >
+                  {isSavingEdit && (
+                    <Loader2 size={14} className="animate-spin" />
+                  )}
+                  {isSavingEdit ? 'Saving...' : 'Save Changes'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {vehicleToDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-[2px]"
+          onClick={() => !isDeleting && setVehicleToDelete(null)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-vehicle-title"
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="grid size-11 place-items-center rounded-2xl bg-rose-50">
+                <Trash2 size={22} />
+              </div>
+              <div>
+                <h3
+                  id="delete-vehicle-title"
+                  className="font-semibold text-slate-900"
+                >
+                  Delete Vehicle
+                </h3>
+                <p className="text-xs text-slate-500">
+                  This action is permanent and cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <p className="mt-4 text-sm leading-6 text-slate-600">
+              Are you sure you want to delete{' '}
+              <span className="font-semibold text-slate-800">
+                {vehicleToDelete.name}
+              </span>{' '}
+              ({vehicleToDelete.registration || 'No Reg'})?
+            </p>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setVehicleToDelete(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-40"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleDeleteVehicle}
+                className="inline-flex items-center gap-2 rounded-xl bg-rose-600 px-5 py-2 text-xs font-semibold text-white hover:bg-rose-700 disabled:opacity-60"
+              >
+                {isDeleting && <Loader2 size={14} className="animate-spin" />}
+                {isDeleting ? 'Deleting...' : 'Delete Vehicle'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </section>

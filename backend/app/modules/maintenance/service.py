@@ -60,7 +60,7 @@ class MaintenanceService:
             return True
 
     def _seed_default_maintenance(self):
-        initial = [
+        initial: list[dict[str, Any]] = [
             {
                 "id": "MT-081",
                 "vehicle_id": "VH-1022",
@@ -135,7 +135,7 @@ class MaintenanceService:
             },
         ]
         for item in initial:
-            self._memory_maintenance[item["id"]] = item
+            self._memory_maintenance[str(item["id"])] = item
 
     # FIX: Centralized helper to update operational availability (availability & fleetAvailability), with optional guard against overriding Rented vehicles
     def set_vehicle_operational_state(self, vehicle_id_or_name: str, availability: str, tenant_id: Optional[str] = None, require_not_rented: bool = False):
@@ -237,7 +237,7 @@ class MaintenanceService:
                 severity="warning",
                 entity_id=m_id,
                 entity_type="maintenance",
-                tenant_id=str(tenant_id) if tenant_id else None,
+                tenant_id=tenant_id or None,
             )
         except Exception:
             pass
@@ -263,8 +263,8 @@ class MaintenanceService:
                 mongo_filter: Dict[str, Any] = {}
                 if tenant_id:
                     mongo_filter["$or"] = [
-                        {"tenant_id": str(tenant_id)},
-                        {"vendor_id": str(tenant_id)},
+                        {"tenant_id": tenant_id},
+                        {"vendor_id": tenant_id},
                     ]
                 else:
                     mongo_filter["tenant_id"] = "__unauthenticated_none__"
@@ -395,7 +395,7 @@ class MaintenanceService:
         if maintenance_id in self._memory_maintenance:
             self._memory_maintenance[maintenance_id].update(update_dict)
 
-        return self.get_maintenance(maintenance_id) or MaintenanceResponse(**{**existing.dict(), **update_dict})
+        return self.get_maintenance(maintenance_id) or MaintenanceResponse(**{**existing.model_dump(), **update_dict})
 
     def complete_maintenance(self, maintenance_id: str, return_to_available: bool = True) -> Optional[MaintenanceResponse]:
         """Mark maintenance job as completed and release vehicle back to Available."""

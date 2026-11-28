@@ -263,3 +263,42 @@ def send_welcome_email(to_email: str, business_name: str) -> bool:
 </html>"""
     return send_email(to_email=to_email, subject=subject, html_content=html_content, to_name=business_name)
 
+
+def send_customer_verification_email(to_email: str, otp: str, customer_name: Optional[str] = None) -> bool:
+    """Send customer email verification OTP."""
+    name = customer_name or "Valued Customer"
+    subject = f"{otp} is your WavyGo customer verification code"
+    html_content = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Customer Verification Code</title>
+</head>
+<body style="font-family: Arial, sans-serif; background-color: #F8FAFC; color: #1E293B; margin: 0; padding: 24px;">
+  <div style="max-width: 500px; margin: 0 auto; background: #FFFFFF; border-radius: 12px; padding: 32px; border: 1px solid #E2E8F0; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <h2 style="color: #059669; margin: 0; font-size: 24px;">WavyGo Rental Services</h2>
+      <p style="color: #64748B; font-size: 13px; margin-top: 4px;">Customer Identity Verification</p>
+    </div>
+    <p style="font-size: 15px;">Hello <strong>{name}</strong>,</p>
+    <p style="font-size: 14px; color: #475569; line-height: 1.6;">
+      Please use the following 6-digit one-time password (OTP) to verify your email address for your vehicle rental registration:
+    </p>
+    <div style="text-align: center; margin: 28px 0;">
+      <div style="display: inline-block; font-size: 32px; font-weight: bold; letter-spacing: 6px; color: #065F46; background: #ECFDF5; padding: 14px 28px; border-radius: 8px; border: 1px dashed #10B981;">
+        {otp}
+      </div>
+      <p style="font-size: 12px; color: #64748B; margin-top: 8px;">Code valid for 10 minutes</p>
+    </div>
+    <p style="font-size: 13px; color: #64748B; line-height: 1.5;">
+      If you did not request this verification, please ignore this email. Never share this code with anyone.
+    </p>
+    <div style="border-top: 1px solid #E2E8F0; margin-top: 24px; padding-top: 16px; text-align: center; font-size: 11px; color: #94A3B8;">
+      &copy; 2026 WavyGo Technologies Pvt. Ltd. Verified Rental Partner Platform.
+    </div>
+  </div>
+</body>
+</html>"""
+    return send_email(to_email=to_email, subject=subject, html_content=html_content, to_name=name)
+
+

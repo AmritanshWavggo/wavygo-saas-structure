@@ -16,7 +16,6 @@ export const authService = {
     })
     if (data?.access_token) {
       localStorage.setItem('access_token', data.access_token)
-      sessionStorage.setItem('wavygo-demo-access', 'enabled')
       sessionStorage.setItem('wavygo-user-email', email.trim().toLowerCase())
       if (data.business_name) localStorage.setItem('wavygo-business-name', data.business_name)
       if (data.owner_name) localStorage.setItem('wavygo-owner-name', data.owner_name)
@@ -56,7 +55,6 @@ export const authService = {
     })
     if (data?.access_token) {
       localStorage.setItem('access_token', data.access_token)
-      sessionStorage.setItem('wavygo-demo-access', 'enabled')
       sessionStorage.setItem('wavygo-user-email', email.trim().toLowerCase())
       if (data.business_name) localStorage.setItem('wavygo-business-name', data.business_name)
       if (data.owner_name) localStorage.setItem('wavygo-owner-name', data.owner_name)
@@ -68,12 +66,15 @@ export const authService = {
     localStorage.removeItem('access_token')
     localStorage.removeItem('wavygo-business-name')
     localStorage.removeItem('wavygo-owner-name')
-    sessionStorage.removeItem('wavygo-demo-access')
+    sessionStorage.removeItem('access_token')
     sessionStorage.removeItem('wavygo-user-email')
   },
 
   getToken() {
-    return localStorage.getItem('access_token') || sessionStorage.getItem('access_token')
+    return (
+      localStorage.getItem('access_token') ||
+      sessionStorage.getItem('access_token')
+    )
   },
 
   isAuthenticated() {

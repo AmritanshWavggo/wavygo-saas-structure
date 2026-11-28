@@ -833,3 +833,74 @@ def test_password_reset_enforces_password_length_without_connecting(
     assert capsys.readouterr().out.strip() == (
         "Passwords must be between 12 and 128 characters."
     )
+
+
+def test_customer_send_and_verify_otp(api: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    client = api.client
+    monkeypatch.setattr("app.services.email_service.send_customer_verification_email", lambda *args, **kwargs: True)
+    monkeypatch.setattr("app.services.sms_service.send_sms_otp", lambda *args, **kwargs: True)
+
+    # 1. Send OTP to email
+    r1 = client.post("/api/v1/customers/send-otp", json={
+        "target": "customer@example.com",
+        "channel": "email",
+        "customer_name": "Rohan"
+    })
+    assert r1.status_code == 200
+    assert r1.json()["success"] is True
+
+    # 2. Verify with invalid OTP -> 400
+    r_bad = client.post("/api/v1/customers/verify-otp", json={
+        "target": "customer@example.com",
+        "channel": "email",
+        "otp": "000000"
+    })
+    assert r_bad.status_code == 400
+
+    # 3. Retrieve stored OTP and verify
+    from app.services.otp_service import _in_memory_otps
+    code, _ = _in_memory_otps["email:customer@example.com"]
+    r2 = client.post("/api/v1/customers/verify-otp", json={
+        "target": "customer@example.com",
+        "channel": "email",
+        "otp": code
+    })
+    assert r2.status_code == 200
+    assert r2.json()["verified"] is True
+
+    # 4. Send & verify Phone OTP
+    r_sms = client.post("/api/v1/customers/send-otp", json={
+        "target": "+91 98765 43210",
+        "channel": "phone",
+        "customer_name": "Rohan"
+    })
+    assert r_sms.status_code == 200
+    phone_code, _ = _in_memory_otps["phone:9876543210"]
+    r_sms_v = client.post("/api/v1/customers/verify-otp", json={
+        "target": "+91 98765 43210",
+        "channel": "phone",
+        "otp": phone_code
+    })
+    assert r_sms_v.status_code == 200
+    assert r_sms_v.json()["verified"] is True
+
+
+def test_customer_manual_verify_endpoint(api: Any) -> None:
+    client = api.client
+    create_res = client.post("/api/v1/customers/", json={
+        "name": "Unverified User",
+        "phone": "+91 91234 56789",
+        "email": "unverified@example.com",
+        "status": "Review"
+    })
+    assert create_res.status_code == 201
+    cid = create_res.json()["id"]
+    assert create_res.json()["status"] == "Review"
+
+    # Call verify endpoint
+    v_res = client.post(f"/api/v1/customers/{cid}/verify")
+    assert v_res.status_code == 200
+    assert v_res.json()["status"] == "Verified"
+    assert v_res.json()["phone_verified"] is True
+    assert v_res.json()["email_verified"] is True
+

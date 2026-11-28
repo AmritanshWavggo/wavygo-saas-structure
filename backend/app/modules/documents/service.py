@@ -50,7 +50,7 @@ class DocumentService:
             return None
 
     def _seed_default_documents(self):
-        initial = [
+        initial: list[dict[str, Any]] = [
             {
                 "id": "DC-104",
                 "name": "Business registration",
@@ -143,7 +143,7 @@ class DocumentService:
             },
         ]
         for item in initial:
-            self._memory_documents[item["id"]] = item
+            self._memory_documents[str(item["id"])] = item
 
     async def upload_document(
         self,
@@ -260,7 +260,7 @@ class DocumentService:
         tenant_query = {
             "$and": [
                 {"$or": [{"id": doc_id}, {"_id": doc_id}]},
-                {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]},
+                {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]},
             ]
         }
         try:
@@ -343,7 +343,10 @@ class DocumentService:
                 "resource_type": old_resource_type,
             })
 
-        return DocumentResponse(**{**existing, **updated_fields})
+        merged_doc: dict[str, Any] = {**existing, **updated_fields}
+        merged_doc["id"] = str(merged_doc.get("id") or doc_id)
+        merged_doc.pop("_id", None)
+        return DocumentResponse.model_validate(merged_doc)
 
     @staticmethod
     def _delete_cloudinary_asset(asset: Dict[str, Any]) -> None:
@@ -376,8 +379,8 @@ class DocumentService:
                 mongo_filter: Dict[str, Any] = {}
                 if tenant_id:
                     mongo_filter["$or"] = [
-                        {"tenant_id": str(tenant_id)},
-                        {"vendor_id": str(tenant_id)},
+                        {"tenant_id": tenant_id},
+                        {"vendor_id": tenant_id},
                     ]
                 else:
                     mongo_filter["tenant_id"] = "__unauthenticated_none__"
@@ -439,6 +442,36 @@ class DocumentService:
                 if doc:
                     doc.pop("_id", None)
                     return DocumentResponse(**doc)
+
+                # Check vehicles collection for vehicle-attached document
+                v_filt: dict[str, Any] = {
+                    "$or": [
+                        {"documents.publicId": doc_id},
+                        {"documents.public_id": doc_id},
+                        {"documents.id": doc_id},
+                    ]
+                }
+                if tenant_id:
+                    v_filt = {"$and": [v_filt, {"$or": [{"vendor_id": tenant_id}, {"tenant_id": tenant_id}]}]}
+                v = db["vehicles"].find_one(v_filt)
+                if v:
+                    for d in (v.get("documents") or []):
+                        pid = d.get("publicId") or d.get("public_id") or d.get("id")
+                        if pid == doc_id:
+                            return DocumentResponse(
+                                id=doc_id,
+                                name=f"{v.get('brand', '')} {v.get('model', '')} {d.get('type', 'Document')}".strip(),
+                                category=d.get("type", "Vehicle Document"),
+                                scope="Vehicle",
+                                vehicle_id=str(v.get("_id") or v.get("id")),
+                                vehicle_name=f"{v.get('brand', '')} {v.get('model', '')}".strip(),
+                                file_url=d.get("url", ""),
+                                public_id=pid,
+                                status=d.get("status", "Verified"),
+                                date=datetime.now(timezone.utc).strftime("%b %d, %Y"),
+                                created_at=datetime.now(timezone.utc).isoformat(),
+                                updated_at=datetime.now(timezone.utc).isoformat(),
+                            )
             except Exception:
                 pass
 
@@ -473,14 +506,19 @@ class DocumentService:
         db = self._get_db()
         if db is not None:
             try:
-                db["documents"].update_one({"$or": [{"id": doc_id}, {"_id": doc_id}]}, {"$set": update_dict})
+                res = db["documents"].update_one({"$or": [{"id": doc_id}, {"_id": doc_id}]}, {"$set": update_dict})
+                if res.matched_count == 0 and payload.status:
+                    db["vehicles"].update_one(
+                        {"$or": [{"documents.publicId": doc_id}, {"documents.public_id": doc_id}, {"documents.id": doc_id}]},
+                        {"$set": {"documents.$.status": payload.status}}
+                    )
             except Exception:
                 pass
 
         if doc_id in self._memory_documents:
             self._memory_documents[doc_id].update(update_dict)
 
-        return self.get_document(doc_id) or DocumentResponse(**{**existing.dict(), **update_dict})
+        return self.get_document(doc_id) or DocumentResponse(**{**existing.model_dump(), **update_dict})
 
     def delete_document(self, doc_id: str) -> bool:
         doc = self.get_document(doc_id)

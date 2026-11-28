@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     brevo_sender_email: Optional[str] = None
     brevo_sender_name: Optional[str] = None
 
+    # SMS credentials (Edumarc SMS / Combird)
+    sms_api_key: Optional[str] = "49497fc6ec4140c78344b1f4c58b717c"
+    sms_api_url: str = "https://smsapi.edumarcsms.com/api/v1/sendsms"
+    sms_sender_id: str = "EDUMRC"
+    sms_template_id: str = "1707178064151587006"
+
     model_config = SettingsConfigDict(
         env_file=(".env", "backend/.env", "../.env"),
         env_file_encoding="utf-8",

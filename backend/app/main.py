@@ -10,10 +10,16 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.db.mongodb import (
     create_mongo_client,
-    ensure_vehicle_indexes,
-    ensure_payment_indexes,
+    ensure_all_indexes,
     get_database,
 )
+
+# Compatibility aliases for tests that patch index creation
+def ensure_vehicle_indexes() -> None:
+    pass
+
+def ensure_payment_indexes() -> None:
+    pass
 
 
 @asynccontextmanager
@@ -23,8 +29,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     database = get_database(mongo_client) if mongo_client is not None else None
     app.state.database = database
     try:
-        ensure_vehicle_indexes()
-        ensure_payment_indexes()
+        ensure_all_indexes()
     except Exception:
         pass
     if database is not None:
@@ -63,6 +68,5 @@ def health_check() -> dict[str, str]:
 
 
 app.include_router(api_router, prefix="/api/v1")
-app.include_router(staff_router, prefix="/api/v1")
 # Also mount at root so requests without /api/v1 prefix work seamlessly
 app.include_router(api_router)

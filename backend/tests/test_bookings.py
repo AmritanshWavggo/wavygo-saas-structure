@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+from typing import Any
+
 from fastapi.testclient import TestClient
 from app.main import app
 from app.modules.bookings.service import booking_service
@@ -87,7 +91,11 @@ def test_update_status_and_payment(monkeypatch):
 
     from bson import ObjectId
     from app.modules.auth.security import get_current_vendor
-    import mongomock
+    try:
+        import mongomock
+    except ImportError:
+        import pytest
+        pytest.skip("mongomock is not installed")
 
     mock_db = mongomock.MongoClient()["wavygo_test"]
     mock_db["payments"].create_index(
@@ -175,8 +183,8 @@ def test_booking_not_found():
     assert res.status_code == 404
 
 
-def _offline_booking_payload(customer_overrides=None):
-    customer = {
+def _offline_booking_payload(customer_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    customer: dict[str, Any] = {
         "name": "Test Customer",
         "phone": "+91 98765 43210",
         "aadhaar": "123456789012",
@@ -189,7 +197,7 @@ def _offline_booking_payload(customer_overrides=None):
             "vehicle_id": "VH-TEST",
             "vehicle_name": "Test Scooter",
             "registration": "GJ 05 TEST 123",
-            "price_per_day": 500,
+            "price_per_day": 500.0,
         },
         "customer": customer,
         "rental": {
@@ -220,9 +228,10 @@ def test_offline_booking_accepts_valid_aadhaar_with_optional_dl():
         (True, ""),
         (True, "GJ0520211234567"),
     )
-    for dl_is_provided, dl_value in dl_cases:
+    for idx, (dl_is_provided, dl_value) in enumerate(dl_cases):
         customer_overrides = {"driving_licence": dl_value} if dl_is_provided else {}
         payload = _offline_booking_payload(customer_overrides)
+        payload["vehicle"]["vehicle_id"] = f"VH-DL-{idx}"
         if not dl_is_provided:
             payload["customer"].pop("driving_licence")
 
@@ -233,6 +242,26 @@ def test_offline_booking_accepts_valid_aadhaar_with_optional_dl():
         assert booking["driving_licence_number"] == (
             "GJ0520211234567" if dl_value == "GJ0520211234567" else None
         )
+
+
+def test_offline_booking_rejects_overlapping_dates():
+    payload1 = _offline_booking_payload()
+    payload1["vehicle"]["vehicle_id"] = "VH-OVERLAP-1"
+    payload1["vehicle"]["vehicle_name"] = "Overlap Test Bike"
+    payload1["rental"]["start_date"] = "2026-12-10"
+    payload1["rental"]["end_date"] = "2026-12-15"
+    res1 = client.post("/api/v1/bookings/offline", json=payload1)
+    assert res1.status_code == 201
+
+    # Overlapping booking for the same vehicle
+    payload2 = _offline_booking_payload()
+    payload2["vehicle"]["vehicle_id"] = "VH-OVERLAP-1"
+    payload2["vehicle"]["vehicle_name"] = "Overlap Test Bike"
+    payload2["rental"]["start_date"] = "2026-12-12"
+    payload2["rental"]["end_date"] = "2026-12-18"
+    res2 = client.post("/api/v1/bookings/offline", json=payload2)
+    assert res2.status_code == 400
+    assert "already booked" in res2.json()["detail"].lower()
 
 
 def test_offline_booking_bill_uses_consistent_two_decimal_rounding(monkeypatch):
@@ -285,3 +314,93 @@ def test_offline_booking_bill_uses_consistent_two_decimal_rounding(monkeypatch):
         assert mock_db["payments"].find_one({"booking": data["id"], "amount": 50.56}) is not None
     finally:
         app.dependency_overrides.pop(get_current_vendor, None)
+
+
+def test_booking_pickup_and_return_otp_flow(monkeypatch):
+    import app.services.sms_service as sms_svc
+    monkeypatch.setattr(sms_svc, "send_sms_otp", lambda *args, **kwargs: True)
+
+    phone = "+91 98765 43210"
+
+    # 1. Send Pickup OTP
+    send_pickup = client.post("/api/v1/bookings/offline/send-otp", json={
+        "phone": phone,
+        "purpose": "pickup",
+        "customer_name": "Test Customer",
+    })
+    assert send_pickup.status_code == 200
+    assert send_pickup.json()["success"] is True
+
+    # Get OTP from memory store
+    from app.services.otp_service import _in_memory_otps
+    clean_phone = "9876543210"
+    otp_entry = _in_memory_otps.get(f"booking:pickup:{clean_phone}")
+    assert otp_entry is not None
+    otp_code = otp_entry[0]
+
+    # Verify invalid OTP
+    bad_verify = client.post("/api/v1/bookings/offline/verify-otp", json={
+        "phone": phone,
+        "purpose": "pickup",
+        "otp": "000000",
+    })
+    assert bad_verify.status_code == 400
+
+    # Verify correct Pickup OTP
+    good_verify = client.post("/api/v1/bookings/offline/verify-otp", json={
+        "phone": phone,
+        "purpose": "pickup",
+        "otp": otp_code,
+    })
+    assert good_verify.status_code == 200
+    assert good_verify.json()["verified"] is True
+
+    # 2. Test Return OTP flow on a created booking
+    create_res = client.post("/api/v1/bookings/offline", json={
+        "vehicle": {
+            "vehicle_id": "VH-TEST-OTP",
+            "vehicle_name": "Activa OTP Special",
+            "price_per_day": 500,
+        },
+        "customer": {
+            "name": "Return Tester",
+            "phone": phone,
+            "aadhaar": "123456789012",
+        },
+        "rental": {
+            "start_date": "2026-11-20",
+            "end_date": "2026-11-21",
+            "pickup_location": "Hub A",
+        },
+        "payment": {
+            "method": "Cash",
+            "paid_amount": 0,
+        },
+    })
+    assert create_res.status_code == 201
+    bk_id = create_res.json()["id"]
+    assert create_res.json()["status"] == "Confirmed"
+
+    # Send Return OTP
+    send_return = client.post("/api/v1/bookings/offline/send-otp", json={
+        "phone": phone,
+        "purpose": "return",
+        "booking_id": bk_id,
+        "customer_name": "Return Tester",
+    })
+    assert send_return.status_code == 200
+
+    return_otp_entry = _in_memory_otps.get(f"booking:return:{clean_phone}")
+    assert return_otp_entry is not None
+    return_otp = return_otp_entry[0]
+
+    # Verify Return OTP -> Should auto-complete the booking
+    verify_return = client.post("/api/v1/bookings/offline/verify-otp", json={
+        "phone": phone,
+        "purpose": "return",
+        "otp": return_otp,
+        "booking_id": bk_id,
+    })
+    assert verify_return.status_code == 200
+    assert verify_return.json()["verified"] is True
+    assert verify_return.json()["booking"]["status"] == "Completed"

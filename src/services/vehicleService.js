@@ -55,10 +55,20 @@ export const vehicleService = {
     let body = updates
     if (!(updates instanceof FormData)) {
       body = new FormData()
+      const numericFields = new Set([
+        'year',
+        'engineCapacity',
+        'seats',
+        'dailyRate',
+        'minimumDays',
+        'securityDeposit',
+        'pickupLat',
+        'pickupLng',
+      ])
       Object.entries(updates).forEach(([key, value]) => {
-        if (value !== undefined && value !== null) {
-          body.append(key, String(value))
-        }
+        if (value === undefined || value === null) return
+        if (numericFields.has(key) && (value === '' || Number.isNaN(Number(value)))) return
+        body.append(key, String(value))
       })
     }
     return apiFetch(`/vehicles/${encodeURIComponent(vehicleId)}`, {

@@ -78,6 +78,12 @@ function LoginPage() {
   const [notice, setNotice] = useState('')
   const [successNotice, setSuccessNotice] = useState('')
 
+  useEffect(() => {
+    if (authService.isAuthenticated()) {
+      navigate('/app/dashboard', { replace: true })
+    }
+  }, [navigate])
+
   // Cooldown countdown timer for OTP resend
   useEffect(() => {
     if (resendCooldown <= 0) return

@@ -25,6 +25,8 @@ class CustomerCreate(BaseModel):
     phone: str = Field(min_length=7, max_length=25)
     email: str | None = Field(default=None, max_length=254)
     status: CustomerStatus = "Review"
+    email_verified: bool = False
+    phone_verified: bool = False
 
     @field_validator("name")
     @classmethod
@@ -62,6 +64,8 @@ class CustomerUpdate(BaseModel):
     phone: str | None = Field(default=None, min_length=7, max_length=25)
     email: str | None = Field(default=None, max_length=254)
     status: CustomerStatus | None = None
+    email_verified: bool | None = None
+    phone_verified: bool | None = None
 
     @field_validator("name", "phone", "status", mode="before")
     @classmethod
@@ -117,6 +121,8 @@ class CustomerResponse(BaseModel):
     phone: str
     email: str | None = None
     status: CustomerStatus = "Review"
+    email_verified: bool = False
+    phone_verified: bool = False
     bookings: int = 0
     active: int = 0
     paid: float = 0
@@ -152,9 +158,27 @@ def parse_customer_id(customer_id: str) -> ObjectId:
     return ObjectId(customer_id)
 
 
+class CustomerSendOtpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=3, max_length=254)
+    channel: Literal["email", "phone"]
+    customer_name: str | None = None
+
+
+class CustomerVerifyOtpRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=3, max_length=254)
+    channel: Literal["email", "phone"]
+    otp: str = Field(min_length=4, max_length=8)
+
+
 def serialize_customer(document: dict[str, Any]) -> dict[str, Any]:
     customer = dict(document)
     customer["id"] = str(customer.pop("_id"))
+    customer["email_verified"] = bool(customer.get("email_verified", customer.get("status") == "Verified"))
+    customer["phone_verified"] = bool(customer.get("phone_verified", customer.get("status") == "Verified"))
     return customer
 
 
@@ -170,6 +194,100 @@ def raise_storage_error() -> NoReturn:
     )
 
 
+@router.post("/send-otp")
+def send_customer_otp(
+    payload: CustomerSendOtpRequest,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> dict[str, Any]:
+    """Generate and dispatch a verification OTP to customer email or phone."""
+    from app.services.otp_service import generate_otp, store_customer_otp
+
+    otp = generate_otp(6)
+    store_customer_otp(payload.target, payload.channel, otp, ttl_seconds=600)
+
+    if payload.channel == "email":
+        norm_email = payload.target.strip().lower()
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", norm_email):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter a valid email address.")
+        from app.services.email_service import send_customer_verification_email
+
+        sent = send_customer_verification_email(norm_email, otp, payload.customer_name)
+        if not sent:
+            logger.warning("Customer verification email failed for %s", norm_email)
+    else:
+        norm_phone = normalize_phone(payload.target)
+        if len(norm_phone) < 10:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter a valid 10-digit mobile number.")
+        from app.services.sms_service import send_sms_otp
+
+        sent = send_sms_otp(norm_phone, otp, payload.customer_name)
+        if not sent:
+            logger.warning("Customer verification SMS failed for %s", norm_phone)
+
+    return {
+        "success": True,
+        "channel": payload.channel,
+        "message": f"Verification code sent to {payload.channel}.",
+    }
+
+
+@router.post("/verify-otp")
+def verify_customer_otp_endpoint(
+    payload: CustomerVerifyOtpRequest,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+) -> dict[str, Any]:
+    """Verify submitted OTP code against Upstash Redis."""
+    from app.services.otp_service import verify_customer_otp
+
+    is_valid = verify_customer_otp(payload.target, payload.channel, payload.otp)
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired verification code.",
+        )
+    return {
+        "success": True,
+        "verified": True,
+        "channel": payload.channel,
+        "message": f"{payload.channel.capitalize()} verified successfully.",
+    }
+
+
+@router.post("/{customer_id}/verify", response_model=CustomerResponse)
+def verify_existing_customer(
+    customer_id: str,
+    vendor: Annotated[dict[str, Any], Depends(get_current_vendor)],
+    collection: Annotated[Collection[dict[str, Any]], Depends(get_customers_collection)],
+) -> dict[str, Any]:
+    """Manually or confirmedly mark a customer as Verified."""
+    object_id = parse_customer_id(customer_id)
+    now = datetime.now(timezone.utc)
+    scoped_filter = {"_id": object_id, "tenant_id": vendor["_id"]}
+    res = collection.update_one(
+        scoped_filter,
+        {
+            "$set": {
+                "status": "Verified",
+                "phone_verified": True,
+                "email_verified": True,
+                "updated_at": now,
+            }
+        },
+    )
+    if not res.matched_count:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found.",
+        )
+    doc = collection.find_one(scoped_filter)
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Customer not found.",
+        )
+    return serialize_customer(doc)
+
+
 @router.post("/", response_model=CustomerResponse, status_code=status.HTTP_201_CREATED)
 def create_customer(
     customer: CustomerCreate,
@@ -177,8 +295,16 @@ def create_customer(
     collection: Annotated[Collection[dict[str, Any]], Depends(get_customers_collection)],
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc)
+    # Determine verified status based on phone/email verification or explicit flag
+    computed_status = customer.status
+    if customer.phone_verified and (customer.email_verified or not customer.email):
+        computed_status = "Verified"
+
     document: dict[str, Any] = {
         **customer.model_dump(exclude_none=True),
+        "status": computed_status,
+        "phone_verified": customer.phone_verified,
+        "email_verified": customer.email_verified,
         "tenant_id": vendor["_id"],
         "phone_normalized": normalize_phone(customer.phone),
         "bookings": 0,
