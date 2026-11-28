@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def inr_to_paise(val: float) -> int:
-    return int(round(float(val) * 100))
+    return round(float(val) * 100)
 
 
 def paise_to_inr(paise: int) -> float:
@@ -44,7 +44,7 @@ class PaymentService:
             return None
 
     def _seed_default_payments(self):
-        initial = [
+        initial: list[dict[str, Any]] = [
             {
                 "id": "TX-7082",
                 "booking": "BK-3984",
@@ -117,7 +117,7 @@ class PaymentService:
             },
         ]
         for item in initial:
-            self._memory_payments[item["id"]] = item
+            self._memory_payments[str(item["id"])] = item
 
     def _generate_tx_id(self) -> str:
         # Cryptographically strong, high-entropy unique identifier
@@ -143,7 +143,7 @@ class PaymentService:
                 detail="Database unavailable. Cannot record payment.",
             )
 
-        tenant_id_str = str(tenant_id)
+        tenant_id_str = tenant_id
 
         # 1. Check Idempotency Key
         idemp_key = payload.idempotency_key.strip()
@@ -433,8 +433,8 @@ class PaymentService:
                 mongo_filter: Dict[str, Any] = {}
                 if tenant_id:
                     mongo_filter["$or"] = [
-                        {"tenant_id": str(tenant_id)},
-                        {"vendor_id": str(tenant_id)},
+                        {"tenant_id": tenant_id},
+                        {"vendor_id": tenant_id},
                     ]
                 else:
                     mongo_filter["tenant_id"] = "__unauthenticated_none__"
@@ -495,8 +495,8 @@ class PaymentService:
                         "$and": [
                             filt,
                             {"$or": [
-                                {"tenant_id": str(tenant_id)},
-                                {"vendor_id": str(tenant_id)},
+                                {"tenant_id": tenant_id},
+                                {"vendor_id": tenant_id},
                                 {"tenant_id": None},
                                 {"vendor_id": None},
                             ]},
@@ -533,7 +533,7 @@ class PaymentService:
                     filt = {
                         "$and": [
                             filt,
-                            {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]},
+                            {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]},
                         ]
                     }
                 db["payments"].update_one(filt, {"$set": update_dict})
@@ -543,7 +543,7 @@ class PaymentService:
         if not tenant_id and payment_id in self._memory_payments:
             self._memory_payments[payment_id].update(update_dict)
 
-        return self.get_payment(payment_id, tenant_id=tenant_id) or PaymentResponse(**{**existing.dict(), **update_dict})
+        return self.get_payment(payment_id, tenant_id=tenant_id) or PaymentResponse(**{**existing.model_dump(), **update_dict})
 
     def refund_payment(self, payment_id: str, reason: Optional[str] = None, tenant_id: Optional[str] = None) -> Optional[PaymentResponse]:
         notes = f"Refunded: {reason}" if reason else "Refund processed"
@@ -562,7 +562,7 @@ class PaymentService:
         db = self._get_db()
         if db is not None and tenant_id:
             try:
-                t_str = str(tenant_id)
+                t_str = tenant_id
                 pipeline = [
                     {
                         "$match": {

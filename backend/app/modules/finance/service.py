@@ -34,7 +34,7 @@ class FinanceService:
             return None
 
     def _seed_default_expenses(self):
-        initial = [
+        initial: list[dict[str, Any]] = [
             {
                 "id": "EXP-101",
                 "category": "Rent & Operations",
@@ -121,7 +121,7 @@ class FinanceService:
             },
         ]
         for item in initial:
-            self._memory_expenses[item["id"]] = item
+            self._memory_expenses[str(item["id"])] = item
 
     def create_expense(self, payload: ExpenseCreate, tenant_id: Optional[str] = None) -> ExpenseResponse:
         now_dt = datetime.now(timezone.utc)
@@ -274,7 +274,7 @@ class FinanceService:
         if expense_id in self._memory_expenses:
             self._memory_expenses[expense_id].update(update_dict)
 
-        return self.get_expense(expense_id) or ExpenseResponse(**{**existing.dict(), **update_dict})
+        return self.get_expense(expense_id) or ExpenseResponse(**{**existing.model_dump(), **update_dict})
 
     def delete_expense(self, expense_id: str) -> bool:
         db = self._get_db()

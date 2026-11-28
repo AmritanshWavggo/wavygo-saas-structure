@@ -71,8 +71,8 @@ class BookingService:
     def _enrich_booking_payment_fields(doc: dict[str, Any]) -> dict[str, Any]:
         total = float(doc.get("total_amount", 0.0))
         paid = float(doc.get("paid", 0.0))
-        total_paise = int(round(total * 100))
-        paid_paise = int(round(paid * 100))
+        total_paise = round(total * 100)
+        paid_paise = round(paid * 100)
         outstanding_paise = max(0, total_paise - paid_paise)
         outstanding = round(outstanding_paise / 100.0, 2)
 
@@ -478,8 +478,8 @@ class BookingService:
                             "amount": float(initial_paid),
                             "status": "Paid" if pending_amount == 0 else "Partial",
                             "notes": f"Initial counter payment for booking {booking_id}",
-                            "tenant_id": str(tenant_id) if tenant_id else None,
-                            "vendor_id": str(tenant_id) if tenant_id else None,
+                            "tenant_id": tenant_id or None,
+                            "vendor_id": tenant_id or None,
                             "created_at": now_str,
                             "updated_at": now_str,
                         }
@@ -581,8 +581,8 @@ class BookingService:
                 mongo_filter: Dict[str, Any] = {}
                 if tenant_id:
                     mongo_filter["$or"] = [
-                        {"tenant_id": str(tenant_id)},
-                        {"vendor_id": str(tenant_id)},
+                        {"tenant_id": tenant_id},
+                        {"vendor_id": tenant_id},
                     ]
                 else:
                     mongo_filter["tenant_id"] = "__unauthenticated_none__"
@@ -821,7 +821,7 @@ class BookingService:
     def _response_from_doc(self, doc: dict[str, Any]) -> OfflineBookingResponse:
         doc = dict(doc)
         doc.pop("_id", None)
-        additional = sum(int(round(float(item.get("amount", 0)) * 100)) for item in doc.get("additionalCharges", []))
+        additional = sum(round(float(item.get("amount", 0)) * 100) for item in doc.get("additionalCharges", []))
         total = self._round_money(float(doc.get("total_amount", 0.0)))
         paid = self._round_money(float(doc.get("paid", 0.0)))
         doc["finalTotalAmount"] = total
@@ -881,18 +881,19 @@ class BookingService:
             late_seconds = (returned_ist - due).total_seconds()
             if late_seconds > 0:
                 late_days = max(1, int((late_seconds + 86399) // 86400))
-                late_paise = late_days * int(round(float((booking.get("vehicle_details") or {}).get("price_per_day", 0)) * 100))
+                late_paise = late_days * round(float((booking.get("vehicle_details") or {}).get("price_per_day", 0)) * 100)
         except Exception:
             late_paise = 0
-        manual_paise = int(round(float(payload.extra_charges) * 100))
-        if manual_paise and not (payload.extra_charge_reason or "").strip():
+        manual_paise = round(float(payload.extra_charges) * 100)
+        manual_reason = (payload.extra_charge_reason or "").strip()
+        if manual_paise and not manual_reason:
             raise HTTPException(status_code=422, detail="A reason is required for manual extra charges.")
         charge_items: list[dict[str, Any]] = []
         stamp = returned.isoformat()
         if late_paise:
             charge_items.append({"amount": self._round_money(late_paise / 100), "reason": "Late return", "type": "late", "createdAt": stamp})
         if manual_paise:
-            charge_items.append({"amount": self._round_money(manual_paise / 100), "reason": payload.extra_charge_reason.strip(), "type": "manual", "createdAt": stamp})
+            charge_items.append({"amount": self._round_money(manual_paise / 100), "reason": manual_reason, "type": "manual", "createdAt": stamp})
         added = self._round_money((late_paise + manual_paise) / 100)
         update: dict[str, Any] = {"$set": {"status": "Returned", "returnedAt": stamp, "returnNotes": payload.notes, "updated_at": stamp, "finalBill": {}}, "$inc": {"total_amount": added, "pending": added, "finalTotalAmount": added}}
         if charge_items:

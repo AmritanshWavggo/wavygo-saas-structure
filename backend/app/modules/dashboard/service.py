@@ -39,7 +39,7 @@ class DashboardService:
         if db is not None and tenant_id:
             try:
                 b_query = {
-                    "$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}],
+                    "$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}],
                     "status": {"$in": ["Active", "Confirmed", "Upcoming"]},
                 }
                 cursor = db["bookings"].find(b_query).sort("created_at", -1).limit(10)
@@ -156,7 +156,7 @@ class DashboardService:
                 if tenant_id:
                     b_query["$and"] = [
                         {"$or": conds},
-                        {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]},
+                        {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]},
                     ]
                     b_query.pop("$or", None)
 
@@ -245,7 +245,7 @@ class DashboardService:
 
         if db is not None:
             try:
-                v_query: Dict[str, Any] = {"$or": [{"tenant_id": str(tenant_id)}, {"tenantId": str(tenant_id)}, {"vendor_id": str(tenant_id)}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
+                v_query: Dict[str, Any] = {"$or": [{"tenant_id": tenant_id}, {"tenantId": tenant_id}, {"vendor_id": tenant_id}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
                 cursor = db["vehicles"].find(v_query)
                 for doc in cursor:
                     doc["id"] = doc.get("id") or str(doc.get("_id"))
@@ -255,7 +255,7 @@ class DashboardService:
                 logger.warning("Error fetching vehicles for dashboard: %s", exc)
 
             try:
-                b_query: Dict[str, Any] = {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
+                b_query: Dict[str, Any] = {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
                 cursor = db["bookings"].find(b_query).sort("created_at", -1)
                 for doc in cursor:
                     doc["id"] = doc.get("id") or str(doc.get("_id"))
@@ -265,7 +265,7 @@ class DashboardService:
                 logger.warning("Error fetching bookings for dashboard: %s", exc)
 
             try:
-                p_query: Dict[str, Any] = {"$or": [{"tenant_id": str(tenant_id)}, {"vendor_id": str(tenant_id)}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
+                p_query: Dict[str, Any] = {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]} if tenant_id else {"tenant_id": "__unauthenticated_none__"}
                 cursor = db["payments"].find(p_query).sort("created_at", -1)
                 for doc in cursor:
                     doc["id"] = doc.get("id") or str(doc.get("_id"))
