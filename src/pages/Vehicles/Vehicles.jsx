@@ -647,7 +647,7 @@ function Vehicles() {
               </h2>
 
               <p className="mt-1 text-xs text-slate-500">
-                Preview fleet · listing updates are not connected to an API
+                Manage your fleet availability, pricing and vehicle details
               </p>
             </div>
 

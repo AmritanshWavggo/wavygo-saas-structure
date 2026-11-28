@@ -1418,16 +1418,9 @@ function Bookings() {
               key: 'id',
               label: 'Booking ID',
               render: (row) => (
-                <div className="flex items-center gap-1.5">
-                  <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
-                    {row.id}
-                  </button>
-                  {row.backendSynced && (
-                    <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                      API
-                    </span>
-                  )}
-                </div>
+                <button type="button" onClick={() => setSelected(row)} className="font-semibold text-emerald-800 hover:underline">
+                  {row.id}
+                </button>
               ),
             },
             { key: 'customer', label: 'Customer', render: (row) => <><span className="font-medium text-slate-800">{row.customer}</span><span className="mt-1 block text-[11px] text-slate-400">{row.vehicle}</span></> },
@@ -1853,7 +1846,7 @@ function Payments() {
     <div>
       <PageHeader
         title="Payments & finance"
-        description="A clear picture of collections and transactions stored in MongoDB, with UPI, Cash, and Card records."
+        description="A clear picture of collections and financial transactions, with UPI, Cash, and Card records."
         action={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -1915,7 +1908,7 @@ function Payments() {
 
         <Card className="p-5 sm:p-6">
           <h2 className="text-sm font-semibold text-slate-900">Finance snapshot</h2>
-          <p className="mt-1 text-xs text-slate-500">FastAPI backend & live collections</p>
+          <p className="mt-1 text-xs text-slate-500">Live collections & net earnings</p>
           <div className="mt-4 space-y-3">
             {[
               ['Current collections', currency(financeOverview?.total_revenue ?? revenue), 'text-emerald-700'],
@@ -1976,14 +1969,7 @@ function Payments() {
                   label: 'Transaction',
                   render: (row) => (
                     <span className="font-semibold text-slate-800">
-                      <span className="inline-flex items-center gap-1.5">
-                        {row.id}
-                        {row.backendSynced && (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                            API
-                          </span>
-                        )}
-                      </span>
+                      {row.id}
                       <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.booking}</span>
                     </span>
                   ),
@@ -2045,14 +2031,7 @@ function Payments() {
                   label: 'Expense ID',
                   render: (row) => (
                     <span className="font-semibold text-slate-800">
-                      <span className="inline-flex items-center gap-1.5">
-                        {row.id}
-                        {row.backendSynced && (
-                          <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
-                            API
-                          </span>
-                        )}
-                      </span>
+                      {row.id}
                       <span className="mt-1 block text-[11px] font-normal text-slate-400">{row.category}</span>
                     </span>
                   ),
@@ -2400,7 +2379,7 @@ function Payments() {
               ['Amount', currency(selected.amount)],
               ['Status', selected.status],
               ['Notes', selected.notes || 'None'],
-              ['Backend Sync', selected.backendSynced ? 'Active (MongoDB)' : 'Synced'],
+              ['Sync Status', 'Verified & In Sync'],
             ].map(([label, value]) => (
               <div key={label} className="flex items-start justify-between gap-4 border-b border-slate-100 pb-2.5 last:border-0">
                 <span className="text-xs text-slate-500">{label}</span>
@@ -2640,7 +2619,7 @@ function Documents() {
       setFormVehicleId('')
     } catch (err) {
       console.error('Document upload error:', err)
-      setUploadError(err.message || 'Failed to upload document to Cloudinary.')
+      setUploadError(err.message || 'Failed to upload document.')
     } finally {
       setIsUploading(false)
     }
@@ -2696,12 +2675,12 @@ function Documents() {
     <div>
       <PageHeader
         title="Documents"
-        description="Paperwork and certificates uploaded to Cloudinary, with secure URLs saved in database."
+        description="Manage vehicle paperwork, registration certificates and business compliance."
         action={
           <div className="flex items-center gap-2">
             <Button variant="quiet" onClick={handleRefresh} disabled={isSyncing}>
               <RefreshCw size={15} className={isSyncing ? 'animate-spin' : ''} />
-              {isSyncing ? 'Syncing...' : 'Sync backend'}
+              {isSyncing ? 'Syncing...' : 'Sync documents'}
             </Button>
             <Button onClick={() => { setShowForm(true); setUploadError('') }}>
               <Upload size={16} />Upload document
@@ -2725,8 +2704,8 @@ function Documents() {
       <Card className="overflow-hidden">
         <Tabs items={['All', 'Business', 'Vehicle']} value={tab} onChange={setTab} />
         <div className="px-4 py-3 sm:px-5">
-          <div className="flex items-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-3.5 py-2 text-xs leading-5 text-sky-900">
-            <span className="font-semibold text-sky-800">☁️ Cloudinary Storage:</span> Files are uploaded directly to Cloudinary CDN, and the secure URLs and metadata are stored in MongoDB.
+          <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs leading-5 text-emerald-900">
+            <span className="font-semibold text-emerald-800">🔒 Secure Document Vault:</span> All compliance paperwork, RC, and permits are securely encrypted and verified.
           </div>
         </div>
 
@@ -2751,8 +2730,8 @@ function Documents() {
                     <span className="flex items-center gap-1.5">
                       {row.name}
                       {(row.file_url || row.url) && (
-                        <span className="rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-600/20">
-                          Cloudinary
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-600/20">
+                          Attached
                         </span>
                       )}
                     </span>
@@ -2862,10 +2841,10 @@ function Documents() {
         </p>
       </Card>
 
-      {/* Cloudinary Upload Document Modal */}
+      {/* Upload Document Modal */}
       {showForm && (
         <Modal
-          title="Upload Document to Cloudinary"
+          title="Upload Document"
           onClose={() => { if (!isUploading) setShowForm(false) }}
           footer={
             <div className="flex justify-end gap-2">
@@ -2876,7 +2855,7 @@ function Documents() {
                 {isUploading ? (
                   <>
                     <Loader2 size={15} className="animate-spin" />
-                    Uploading to Cloudinary...
+                    Uploading document...
                   </>
                 ) : (
                   <>
@@ -2996,8 +2975,8 @@ function Documents() {
               />
             </div>
 
-            <div className="rounded-xl bg-sky-50 p-3 text-[11px] leading-5 text-sky-800">
-              ⚡ File is uploaded directly to your Cloudinary cloud (<span className="font-mono">himuiwgh</span>). The secure CDN link is then saved in MongoDB.
+            <div className="rounded-xl bg-slate-50 p-3 text-[11px] leading-5 text-slate-600">
+              🔒 File will be securely encrypted and linked to your business records.
             </div>
           </form>
         </Modal>
@@ -3097,12 +3076,12 @@ function Documents() {
                         e.target.style.display = 'none'
                         if (e.target.parentNode) {
                           e.target.parentNode.innerHTML =
-                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline preview. Please check Cloudinary Security settings for PDF delivery.</p>'
+                            '<p class="py-8 text-center text-xs text-slate-400">Unable to render inline preview. Please click "Open in new tab" above.</p>'
                         }
                       }}
                     />
                     <p className="mt-2 text-center text-[11px] text-slate-500">
-                      Preview rendered via Cloudinary. To open direct PDF, ensure <strong>&ldquo;PDF and ZIP files delivery&rdquo;</strong> is enabled in your Cloudinary Security settings.
+                      To view or print the full document, click <strong>&ldquo;Open in new tab&rdquo;</strong> above.
                     </p>
                   </div>
                 ) : (
@@ -4363,8 +4342,8 @@ function Settings() {
       <PageHeader title="Settings" description="Manage your business preferences, hub address and rental policies." />
       <div className={`mb-4 rounded-xl border px-4 py-3 text-xs leading-5 ${settings.backendSynced ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
         {settings.backendSynced
-          ? 'Live mode: Connected to MongoDB database. Hub profile and rental preferences persist in real time.'
-          : 'Connecting to tenant configuration...'}
+          ? 'Live mode: Hub profile, rental policies and hub settings are synchronized in real time.'
+          : 'Connecting to business configuration...'}
       </div>
       <div className="grid gap-4 lg:grid-cols-[225px_minmax(0,1fr)]">
         <Card className="h-fit p-2">

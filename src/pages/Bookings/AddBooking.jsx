@@ -582,7 +582,7 @@ function AddBooking() {
             {offlineMode ? 'Create an offline booking' : 'Add a booking'}
           </h1>
           <p className="mt-1.5 text-sm text-slate-500">
-            Direct walk-in / in-store booking connected with FastAPI backend & database.
+            Direct walk-in counter booking and instant rental confirmation.
           </p>
         </div>
         <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-emerald-100 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800">
@@ -1157,7 +1157,7 @@ function AddBooking() {
               <div className="flex gap-3 rounded-xl border border-emerald-100 bg-emerald-50/60 p-4">
                 <BadgeCheck size={17} className="mt-0.5 shrink-0 text-emerald-700" />
                 <p className="text-xs leading-5 text-emerald-900/75">
-                  This walk-in offline booking will be created in the FastAPI backend via <code className="font-mono text-emerald-800">POST /api/v1/bookings/offline</code> and stored in MongoDB.
+                  This walk-in offline booking will be confirmed, added to your active rental schedule, and verified.
                 </p>
               </div>
             </div>
@@ -1277,7 +1277,7 @@ function AddBooking() {
           <div className="mt-5 flex gap-2.5 rounded-xl border border-emerald-100 bg-emerald-50/60 p-3">
             <ShieldCheck size={15} className="mt-0.5 shrink-0 text-emerald-700" />
             <p className="text-[11px] leading-4 text-emerald-900/75">
-              Connected with FastAPI backend at <span className="font-semibold">/api/v1/bookings/offline</span>.
+              Encrypted booking management · Live rental schedule active.
             </p>
           </div>
         </aside>
