@@ -914,33 +914,15 @@ class BookingService:
         claim_filter = {
             "$and": [
                 self._vehicle_filter(booking, tenant_id),
-                {
-                    "$or": [
-                        {"fleetAvailability": {"$in": ["Available", "Under Review", "available"]}},
-                        {"availability": {"$in": ["Available", "Under Review", "available"]}},
-                        {"fleetAvailability": {"$exists": False}},
-                        {"availability": {"$exists": False}},
-                        {"fleetAvailability": None},
-                        {"availability": None},
-                    ]
-                },
-                {"fleetAvailability": {"$nin": ["Maintenance", "Rented"]}},
-                {"availability": {"$nin": ["Maintenance", "Rented"]}},
+                {"fleetAvailability": {"$ne": "Maintenance"}},
+                {"availability": {"$ne": "Maintenance"}},
             ]
         }
         claimed = db["vehicles"].find_one_and_update(claim_filter, {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now}}, return_document=ReturnDocument.AFTER)
         if not claimed:
             veh = db["vehicles"].find_one(self._vehicle_filter(booking, tenant_id))
-            if veh:
-                if veh.get("fleetAvailability") == "Maintenance" or veh.get("availability") == "Maintenance":
-                    raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
-                if veh.get("fleetAvailability") == "Rented" or veh.get("availability") == "Rented":
-                    raise HTTPException(status_code=409, detail="Vehicle is already rented.")
-                claimed = db["vehicles"].find_one_and_update(
-                    self._vehicle_filter(booking, tenant_id),
-                    {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now}},
-                    return_document=ReturnDocument.AFTER,
-                )
+            if veh and (veh.get("fleetAvailability") == "Maintenance" or veh.get("availability") == "Maintenance"):
+                raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
 
         updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, "Confirmed"), {"$set": {"status": "Active", "handoverAt": now, "handoverNotes": payload.notes, "updated_at": now}}, return_document=ReturnDocument.AFTER)
         if not updated:
