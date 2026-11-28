@@ -1025,9 +1025,9 @@ class BookingService:
             holder_query["$and"].append({"$or": vehicle_conds})
 
         holder = db["bookings"].find_one(holder_query)
-        # FIX: On booking completion, set vehicle state to Maintenance if open maintenance exists, otherwise Available
+        # FIX: On booking completion, set vehicle state to Maintenance if open maintenance exists, otherwise Under Review
         if not holder:
-            vehicle_state = "Maintenance" if self._has_open_maintenance(db, updated, tenant_id) else "Available"
+            vehicle_state = "Maintenance" if self._has_open_maintenance(db, updated, tenant_id) else "Under Review"
             db["vehicles"].update_one(vehicle_filter, {"$set": {"fleetAvailability": vehicle_state, "availability": vehicle_state, "updatedAt": stamp}})
         return self._response_from_doc(updated)
 

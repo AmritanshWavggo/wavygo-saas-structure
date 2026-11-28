@@ -58,7 +58,7 @@ def test_full_lifecycle_and_payment_status_is_independent(lifecycle_db):
     assert completed.status == "Completed" and completed.outstanding == 1050.0
     payment_service.record_payment(PaymentCreate(booking_id="BK-LIFE", amount=1050, method="Cash", idempotency_key="after-complete"), tenant)
     assert db["bookings"].find_one({"id": "BK-LIFE"})["paid"] == 1050.0
-    assert db["vehicles"].find_one({"id": "VH-LIFE"})["fleetAvailability"] == "Available"
+    assert db["vehicles"].find_one({"id": "VH-LIFE"})["fleetAvailability"] == "Under Review"
 
 
 def test_invalid_repeated_cancelled_and_cross_tenant_transitions(lifecycle_db):
