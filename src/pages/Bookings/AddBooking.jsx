@@ -330,7 +330,7 @@ function AddBooking() {
     if (!pickupOtpVerified) {
       setPickupOtpMsg({
         type: 'error',
-        text: 'Bike handover confirm karne ke liye customer ke mobile number par OTP bhej kar verify karein.',
+        text: 'Please verify the customer mobile number with OTP before confirming bike handover.',
       })
       return
     }
@@ -1123,7 +1123,7 @@ function AddBooking() {
                 </div>
 
                 <p className="text-xs text-slate-500 leading-relaxed">
-                  Bike handover karne se pehle customer ke mobile number par OTP bhejein aur match karein taaki bike rental pickup officially confirm ho sake.
+                  Send and verify the OTP sent to customer mobile number before vehicle handover to officially confirm rental pickup.
                 </p>
 
                 {pickupOtpMsg.text && (

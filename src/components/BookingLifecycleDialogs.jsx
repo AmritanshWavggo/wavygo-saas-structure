@@ -266,7 +266,7 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
             <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-3.5 text-xs text-amber-950 space-y-2">
               <div className="flex items-center gap-2 font-bold text-amber-900 text-sm">
                 <Clock size={17} className="text-amber-700 shrink-0" />
-                <span>Allotted Time Se Zyada Ride Use Hui (Late Return)</span>
+                <span>Ride Exceeded Allotted Time (Late Return)</span>
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs bg-white/70 p-2.5 rounded-lg border border-amber-200">
                 <div>
@@ -466,7 +466,7 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
 
             {phone && !otpVerified && !otpBypassed && (
               <div className="mt-2.5 flex items-center justify-between border-t border-amber-200/60 pt-2 text-[11px]">
-                <span>Bike return confirm karne ke liye customer ke phone par OTP bhejein.</span>
+                <span>Send an OTP to the customer's phone to verify and confirm vehicle return.</span>
                 <button
                   type="button"
                   onClick={() => { setOtpBypassed(true); setOtpMsg({ type: '', text: '' }) }}

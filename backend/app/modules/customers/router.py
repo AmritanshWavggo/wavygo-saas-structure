@@ -64,6 +64,8 @@ class CustomerUpdate(BaseModel):
     phone: str | None = Field(default=None, min_length=7, max_length=25)
     email: str | None = Field(default=None, max_length=254)
     status: CustomerStatus | None = None
+    email_verified: bool | None = None
+    phone_verified: bool | None = None
 
     @field_validator("name", "phone", "status", mode="before")
     @classmethod

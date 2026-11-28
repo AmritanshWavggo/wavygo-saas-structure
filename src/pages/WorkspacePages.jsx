@@ -385,9 +385,9 @@ function VerifyCustomerModal({ customer, onClose, onVerified }) {
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 flex items-start gap-2">
             <AlertCircle size={15} className="text-amber-600 shrink-0 mt-0.5" />
             <div className="space-y-0.5">
-              <p className="font-semibold">OTP Verification Zaroori Hai</p>
+              <p className="font-semibold">OTP Verification Required</p>
               <p className="text-[11px] text-amber-800 leading-relaxed">
-                Jab tak customer ka <strong>Mobile SMS OTP</strong> aur <strong>Email OTP</strong> dono match nahi ho jaate, tab tak profile verified nahi hogi. Dono verify hote hi customer automatically Verified ho jayega.
+                Both <strong>Mobile SMS OTP</strong> and <strong>Email OTP</strong> must be verified for the profile to be marked as Verified. Once both are verified, status automatically updates to Verified.
               </p>
             </div>
           </div>
@@ -674,7 +674,7 @@ function AddCustomerModal({ onClose, onSave }) {
       return
     }
     if (status === 'Verified' && (!phoneVerified || !emailVerified)) {
-      setError('Customer ko "Verified" karne ke liye Mobile aur Email dono ka OTP verify hona zaroori hai. Ya fir status "Review" select karein.')
+      setError('To mark customer as "Verified", both Mobile and Email OTPs must be verified. Alternatively, select status "Review".')
       return
     }
     setError('')
@@ -878,7 +878,7 @@ function AddCustomerModal({ onClose, onSave }) {
                 {status === 'Review' && <Check size={13} className="text-amber-700" />}
               </div>
               <p className="mt-1 text-[11px] text-slate-500 leading-tight">
-                Profile status "Review" rahega. Baad me customer table me "Verify" button daba kar kabhi bhi SMS/Email OTP bhej kar verify kar sakte hain.
+                Profile status will remain "Review". You can verify anytime later from the customer table via SMS/Email OTP.
               </p>
             </button>
 
@@ -892,7 +892,358 @@ function AddCustomerModal({ onClose, onSave }) {
                 {status === 'Verified' && <Check size={13} className="text-emerald-700" />}
               </div>
               <p className="mt-1 text-[11px] text-slate-500 leading-tight">
-                Customer genuine hai aur aapne physical ID/documents personally verify kar liye hain ya upar OTP verify ho chuka hai.
+                Customer identity has been personally verified with physical ID/documents or confirmed via OTP above.
+              </p>
+            </button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+function EditCustomerModal({ customer, onClose, onSave }) {
+  const [name, setName] = useState(customer?.name || '')
+  const [phone, setPhone] = useState(customer?.phone || '')
+  const [email, setEmail] = useState(customer?.email || '')
+  const [status, setStatus] = useState(customer?.status || 'Review')
+
+  const [phoneOtp, setPhoneOtp] = useState('')
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false)
+  const [phoneSending, setPhoneSending] = useState(false)
+  const [phoneVerifying, setPhoneVerifying] = useState(false)
+  const [phoneVerified, setPhoneVerified] = useState(Boolean(customer?.phone_verified || customer?.status === 'Verified'))
+  const [phoneMsg, setPhoneMsg] = useState({ type: '', text: '' })
+
+  const [emailOtp, setEmailOtp] = useState('')
+  const [emailOtpSent, setEmailOtpSent] = useState(false)
+  const [emailSending, setEmailSending] = useState(false)
+  const [emailVerifying, setEmailVerifying] = useState(false)
+  const [emailVerified, setEmailVerified] = useState(Boolean(customer?.email_verified || customer?.status === 'Verified'))
+  const [emailMsg, setEmailMsg] = useState({ type: '', text: '' })
+
+  const [isSaving, setIsSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSendPhoneOtp() {
+    if (!phone || phone.trim().length < 10) {
+      setPhoneMsg({ type: 'error', text: 'Enter a valid 10-digit mobile number first.' })
+      return
+    }
+    setPhoneSending(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        customer_name: name.trim() || undefined,
+      })
+      setPhoneOtpSent(true)
+      setPhoneMsg({ type: 'success', text: `SMS OTP sent to ${phone.trim()}.` })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Failed to send SMS OTP.' })
+    } finally {
+      setPhoneSending(false)
+    }
+  }
+
+  async function handleVerifyPhoneOtp() {
+    if (!phoneOtp || phoneOtp.trim().length < 4) {
+      setPhoneMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setPhoneVerifying(true)
+    setPhoneMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: phone.trim(),
+        channel: 'phone',
+        otp: phoneOtp.trim(),
+      })
+      setPhoneVerified(true)
+      setStatus('Verified')
+      setPhoneMsg({ type: 'success', text: 'Mobile number verified! Profile status updated to Verified.' })
+    } catch (err) {
+      setPhoneMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setPhoneVerifying(false)
+    }
+  }
+
+  async function handleSendEmailOtp() {
+    if (!email || !email.includes('@')) {
+      setEmailMsg({ type: 'error', text: 'Enter a valid email address first.' })
+      return
+    }
+    setEmailSending(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.sendCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        customer_name: name.trim() || undefined,
+      })
+      setEmailOtpSent(true)
+      setEmailMsg({ type: 'success', text: `Email OTP sent to ${email.trim()}.` })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Failed to send Email OTP.' })
+    } finally {
+      setEmailSending(false)
+    }
+  }
+
+  async function handleVerifyEmailOtp() {
+    if (!emailOtp || emailOtp.trim().length < 4) {
+      setEmailMsg({ type: 'error', text: 'Please enter a valid OTP.' })
+      return
+    }
+    setEmailVerifying(true)
+    setEmailMsg({ type: '', text: '' })
+    try {
+      await customerService.verifyCustomerOtp({
+        target: email.trim(),
+        channel: 'email',
+        otp: emailOtp.trim(),
+      })
+      setEmailVerified(true)
+      setStatus('Verified')
+      setEmailMsg({ type: 'success', text: 'Email verified! Profile status updated to Verified.' })
+    } catch (err) {
+      setEmailMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP.' })
+    } finally {
+      setEmailVerifying(false)
+    }
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    if (!name.trim()) {
+      setError('Full name is required.')
+      return
+    }
+    if (!phone.trim()) {
+      setError('Phone number is required.')
+      return
+    }
+    setError('')
+    setIsSaving(true)
+
+    try {
+      await onSave({
+        name: name.trim(),
+        phone: phone.trim(),
+        email: email.trim() || '',
+        status,
+        phone_verified: phoneVerified,
+        email_verified: emailVerified,
+      })
+      onClose()
+    } catch (err) {
+      setError(err?.message || 'Failed to update customer details.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <Modal
+      title="Edit Customer Details"
+      onClose={onClose}
+      footer={
+        <div className="flex justify-between items-center w-full">
+          <span className="text-[11px] text-slate-400 font-mono">ID: {customer?.id}</span>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              form="edit-customer-form"
+              disabled={isSaving}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              {isSaving ? <Loader2 size={15} className="animate-spin" /> : <Check size={15} />}
+              Save Changes
+            </Button>
+          </div>
+        </div>
+      }
+    >
+      <form id="edit-customer-form" onSubmit={handleSubmit} className="space-y-4 py-1">
+        {error && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+            {error}
+          </div>
+        )}
+
+        <div>
+          <label className="mb-1.5 block text-xs font-medium text-slate-700">
+            Full Name <span className="text-rose-500">*</span>
+          </label>
+          <input
+            required
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Rahul Sharma"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+        </div>
+
+        {/* Phone + Optional Inline SMS OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Phone Number <span className="text-rose-500">*</span>
+            </label>
+            {phoneVerified ? (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                <Check size={12} /> Verified
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSendPhoneOtp}
+                disabled={phoneSending || phone.trim().length < 10}
+                className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+              >
+                {phoneSending ? 'Sending SMS...' : phoneOtpSent ? 'Resend SMS' : 'Verify via SMS OTP'}
+              </button>
+            )}
+          </div>
+          <input
+            required
+            type="tel"
+            value={phone}
+            onChange={(e) => {
+              setPhone(e.target.value)
+              if (phoneVerified && e.target.value !== customer?.phone) setPhoneVerified(false)
+            }}
+            placeholder="e.g. 9876543210"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {phoneMsg.text && (
+            <p className={`mt-1 text-xs ${phoneMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {phoneMsg.text}
+            </p>
+          )}
+          {phoneOtpSent && !phoneVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={phoneOtp}
+                onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyPhoneOtp}
+                disabled={phoneVerifying || phoneOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+              >
+                {phoneVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Email + Optional Inline Email OTP */}
+        <div>
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-medium text-slate-700">
+              Email Address <span className="text-slate-400 font-normal">(Optional)</span>
+            </label>
+            {email.trim() && (
+              emailVerified ? (
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                  <Check size={12} /> Verified
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleSendEmailOtp}
+                  disabled={emailSending || !email.includes('@')}
+                  className="text-[11px] font-medium text-emerald-700 hover:text-emerald-800 underline disabled:opacity-40"
+                >
+                  {emailSending ? 'Sending Email...' : emailOtpSent ? 'Resend Email' : 'Verify via Email OTP'}
+                </button>
+              )
+            )}
+          </div>
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              if (emailVerified && e.target.value !== customer?.email) setEmailVerified(false)
+            }}
+            placeholder="e.g. customer@example.com"
+            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+          />
+          {emailMsg.text && (
+            <p className={`mt-1 text-xs ${emailMsg.type === 'error' ? 'text-rose-600' : 'text-emerald-700'}`}>
+              {emailMsg.text}
+            </p>
+          )}
+          {emailOtpSent && !emailVerified && (
+            <div className="mt-2 flex items-center gap-2 rounded-xl bg-slate-50 p-2.5 border border-slate-200">
+              <input
+                type="text"
+                placeholder="6-digit OTP"
+                maxLength={6}
+                value={emailOtp}
+                onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, ''))}
+                className="h-8 w-28 rounded-lg border border-slate-300 px-2.5 text-xs font-mono text-center tracking-widest outline-none focus:border-emerald-500"
+              />
+              <Button
+                type="button"
+                onClick={handleVerifyEmailOtp}
+                disabled={emailVerifying || emailOtp.length < 4}
+                className="h-8 px-2.5 text-xs bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {emailVerifying ? <Loader2 size={12} className="animate-spin" /> : 'Confirm'}
+              </Button>
+            </div>
+          )}
+        </div>
+
+        {/* Profile Status Option */}
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-800">Profile Status Option</span>
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${status === 'Verified' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+              {status}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setStatus('Review')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Review' ? 'border-amber-500 bg-amber-50/70 text-amber-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Review</span>
+                {status === 'Review' && <Check size={13} className="text-amber-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Profile status will remain "Review". Verification is pending.
+              </p>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setStatus('Verified')}
+              className={`rounded-xl border p-2.5 text-left transition ${status === 'Verified' ? 'border-emerald-500 bg-emerald-50/70 text-emerald-950 font-medium' : 'border-slate-200 bg-white text-slate-600'}`}
+            >
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span>Verified</span>
+                {status === 'Verified' && <Check size={13} className="text-emerald-700" />}
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500 leading-tight">
+                Customer identity has been verified with valid documents or OTP.
               </p>
             </button>
           </div>
@@ -910,6 +1261,7 @@ function Customers() {
   const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
   const [selected, setSelected] = useState(null)
   const [verifyCustomer, setVerifyCustomer] = useState(null)
+  const [editCustomer, setEditCustomer] = useState(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [notice, setNotice] = useState('')
@@ -1037,6 +1389,14 @@ function Customers() {
                       Verify
                     </Button>
                   )}
+                  <Button
+                    variant="quiet"
+                    className="min-h-8 px-2.5 text-slate-700 hover:text-emerald-700"
+                    onClick={() => setEditCustomer(row)}
+                  >
+                    <Pencil size={14} />
+                    Edit
+                  </Button>
                   <Button variant="quiet" className="min-h-8 px-2.5" onClick={() => setSelected(row)}>
                     <Eye size={15} />View
                   </Button>
@@ -1058,6 +1418,28 @@ function Customers() {
             updateRecord('customers', customerId, { status: 'Verified' })
             if (syncCustomers) await syncCustomers()
             setNotice(`Customer "${verifyCustomer.name}" verified successfully!`)
+            setTimeout(() => setNotice(''), 4000)
+          }}
+        />
+      )}
+
+      {editCustomer && (
+        <EditCustomerModal
+          customer={editCustomer}
+          onClose={() => setEditCustomer(null)}
+          onSave={async (values) => {
+            const isMongoId = /^[0-9a-fA-F]{24}$/.test(editCustomer.id)
+            if (isMongoId) {
+              await customerService.updateCustomer(editCustomer.id, {
+                name: values.name,
+                phone: values.phone,
+                email: values.email || null,
+                status: values.status,
+              })
+              if (syncCustomers) await syncCustomers()
+            }
+            updateRecord('customers', editCustomer.id, values)
+            setNotice(`Customer "${values.name}" details updated successfully!`)
             setTimeout(() => setNotice(''), 4000)
           }}
         />
@@ -1101,6 +1483,41 @@ function Customers() {
           title={selected.name}
           record={selected}
           onClose={() => setSelected(null)}
+          footer={
+            <div className="flex items-center justify-between w-full">
+              {selected.status === 'Review' ? (
+                <Button
+                  variant="secondary"
+                  className="min-h-8 px-3 text-xs font-semibold text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                  onClick={() => {
+                    const cust = selected
+                    setSelected(null)
+                    setVerifyCustomer(cust)
+                  }}
+                >
+                  <ShieldCheck size={14} className="text-emerald-600 mr-1" />
+                  Verify Profile
+                </Button>
+              ) : <div />}
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="secondary"
+                  className="min-h-8 px-3 text-xs font-semibold text-slate-700 hover:text-emerald-700"
+                  onClick={() => {
+                    const cust = selected
+                    setSelected(null)
+                    setEditCustomer(cust)
+                  }}
+                >
+                  <Pencil size={14} className="mr-1" />
+                  Edit Customer
+                </Button>
+                <Button variant="secondary" onClick={() => setSelected(null)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          }
           rows={[
             ['Customer ID', selected.id], ['Phone', selected.phone], ['Email', selected.email],
             ['Profile status', selected.status], ['Total bookings', selected.bookings],
@@ -1287,7 +1704,7 @@ function ReturnBikeModal({ booking, onClose, onCompleted }) {
           </div>
 
           <p className="text-[11px] text-slate-500 leading-relaxed">
-            Customer ke mobile number par SMS se OTP bheja jayega. Customer se OTP lekar enter karein jisse bike return confirm ho aur ride officially end ho sake.
+            An OTP will be sent to the customer's mobile number via SMS. Enter the received OTP to confirm vehicle return and officially end the rental.
           </p>
 
           {msg.text && (
