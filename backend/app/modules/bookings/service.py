@@ -542,12 +542,25 @@ class BookingService:
         db = self._get_db()
         if db is not None:
             try:
-                filt: dict[str, Any] = {"$or": [{"id": booking_id}, {"_id": booking_id}]}
+                b_conds: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+                if ObjectId.is_valid(booking_id):
+                    b_conds.append({"_id": ObjectId(booking_id)})
+                filt: dict[str, Any] = {"$or": b_conds}
                 if tenant_id:
+                    tenant_conds: list[dict[str, Any]] = [
+                        {"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id},
+                        {"tenant_id": None}, {"vendor_id": None},
+                    ]
+                    if ObjectId.is_valid(tenant_id):
+                        tenant_conds.extend([
+                            {"tenant_id": ObjectId(tenant_id)},
+                            {"vendor_id": ObjectId(tenant_id)},
+                            {"tenantId": ObjectId(tenant_id)},
+                        ])
                     filt = {
                         "$and": [
                             filt,
-                            {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenant_id": None}, {"vendor_id": None}]},
+                            {"$or": tenant_conds},
                         ]
                     }
                 doc = db["bookings"].find_one(filt)
@@ -643,8 +656,11 @@ class BookingService:
         if db is not None:
             try:
                 with mongo_transaction(client) as session:
+                    b_filter: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+                    if ObjectId.is_valid(booking_id):
+                        b_filter.append({"_id": ObjectId(booking_id)})
                     db["bookings"].update_one(
-                        {"$or": [{"id": booking_id}, {"_id": booking_id}]},
+                        {"$or": b_filter},
                         {"$set": update_dict},
                         session=session,
                     )
@@ -939,7 +955,7 @@ class BookingService:
             raise HTTPException(status_code=503, detail="Database unavailable.")
         if not db["bookings"].find_one(self._ownership_filter(booking_id, tenant_id)):
             raise HTTPException(status_code=404, detail="Booking not found.")
-        booking = db["bookings"].find_one(self._tenant_filter(booking_id, tenant_id, "Active"))
+        booking = db["bookings"].find_one(self._tenant_filter(booking_id, tenant_id, ["Active", "Completed"]))
         if not booking:
             raise HTTPException(status_code=409, detail="Return requires an Active booking.")
         returned = self._action_time(payload.occurred_at)
@@ -972,7 +988,7 @@ class BookingService:
         update: dict[str, Any] = {"$set": {"status": "Returned", "returnedAt": stamp, "returnNotes": payload.notes, "updated_at": stamp, "finalBill": {}}, "$inc": {"total_amount": added, "pending": added, "finalTotalAmount": added}}
         if charge_items:
             update["$push"] = {"additionalCharges": {"$each": charge_items}}
-        updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, "Active"), update, return_document=ReturnDocument.AFTER)
+        updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, ["Active", "Completed"]), update, return_document=ReturnDocument.AFTER)
         if not updated:
             raise HTTPException(status_code=409, detail="Booking is no longer Active; return was not applied.")
         # FIX: On rental return, set vehicle state to Maintenance if open maintenance exists, otherwise Under Review
@@ -1009,7 +1025,7 @@ class BookingService:
         if vehicle_name and vehicle_name != vehicle_id:
             vehicle_conds.extend([{"vehicle_details.name": vehicle_name}, {"vehicle": vehicle_name}])
 
-        t_refs = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
+        t_refs: list[dict[str, Any]] = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
         if ObjectId.is_valid(tenant_id):
             t_refs.extend([{"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}, {"tenantId": ObjectId(tenant_id)}])
         b_exclude: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]

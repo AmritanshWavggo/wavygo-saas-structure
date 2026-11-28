@@ -61,6 +61,7 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
   const amount = Number(extraCharges || 0)
   const existingBill = booking.finalBill
 
+  const bookingId = booking.id || booking._id || ''
   const phone = booking.phone || booking.customer_details?.phone || booking.customerPhone || ''
   const customerName = booking.customer || booking.customer_details?.name || 'Customer'
   const vehicleName = booking.vehicle || booking.vehicle_details?.name || ''
@@ -76,7 +77,7 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
       await bookingService.sendBookingOtp?.({
         phone,
         purpose: 'return',
-        booking_id: booking.id,
+        booking_id: bookingId,
         customer_name: customerName,
         vehicle_name: vehicleName,
       })
@@ -102,7 +103,6 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
         phone,
         purpose: 'return',
         otp: code,
-        booking_id: booking.id,
       })
       setOtpVerified(true)
       setOtpMsg({ type: 'success', text: 'Return OTP verified successfully! ✓' })
@@ -155,9 +155,9 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
     setSubmitting(true)
     try {
       let updated
-      if (action === 'handover') updated = await bookingService.handoverOfflineBooking(booking.id, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined })
-      if (action === 'return') updated = await bookingService.returnOfflineBooking(booking.id, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined, extraCharges: amount, extraChargeReason: extraChargeReason.trim() || undefined })
-      if (action === 'complete') updated = await bookingService.completeOfflineBooking(booking.id, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined })
+      if (action === 'handover') updated = await bookingService.handoverOfflineBooking(bookingId, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined })
+      if (action === 'return') updated = await bookingService.returnOfflineBooking(bookingId, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined, extraCharges: amount, extraChargeReason: extraChargeReason.trim() || undefined })
+      if (action === 'complete') updated = await bookingService.completeOfflineBooking(bookingId, { occurredAt: timestamp.toISOString(), notes: notes.trim() || undefined })
       if (action === 'return') {
         setReturnResult(updated)
         return
