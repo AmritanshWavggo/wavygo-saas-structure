@@ -770,17 +770,29 @@ class BookingService:
     @staticmethod
     def _tenant_filter(booking_id: str, tenant_id: str, expected_status: str | list[str]) -> dict[str, Any]:
         statuses = expected_status if isinstance(expected_status, list) else [expected_status]
+        b_refs: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+        if ObjectId.is_valid(booking_id):
+            b_refs.append({"_id": ObjectId(booking_id)})
+        t_refs: list[dict[str, Any]] = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
+        if ObjectId.is_valid(tenant_id):
+            t_refs.extend([{"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}, {"tenantId": ObjectId(tenant_id)}])
         return {
             "$and": [
-                {"$or": [{"id": booking_id}, {"_id": booking_id}]},
-                {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]},
+                {"$or": b_refs},
+                {"$or": t_refs},
                 {"status": {"$in": statuses}},
             ]
         }
 
     @staticmethod
     def _ownership_filter(booking_id: str, tenant_id: str) -> dict[str, Any]:
-        return {"$and": [{"$or": [{"id": booking_id}, {"_id": booking_id}]}, {"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
+        b_refs: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+        if ObjectId.is_valid(booking_id):
+            b_refs.append({"_id": ObjectId(booking_id)})
+        t_refs: list[dict[str, Any]] = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
+        if ObjectId.is_valid(tenant_id):
+            t_refs.extend([{"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}, {"tenantId": ObjectId(tenant_id)}])
+        return {"$and": [{"$or": b_refs}, {"$or": t_refs}]}
 
     @staticmethod
     def _vehicle_filter(booking: dict[str, Any], tenant_id: str) -> dict[str, Any]:
@@ -792,7 +804,10 @@ class BookingService:
             refs.extend([{"registration": registration}, {"registrationNumber": registration}])
         if ObjectId.is_valid(vehicle_id):
             refs.append({"_id": ObjectId(vehicle_id)})
-        return {"$and": [{"$or": refs}, {"$or": [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}]}
+        tenant_conds: list[dict[str, Any]] = [{"tenantId": tenant_id}, {"tenant_id": tenant_id}, {"vendor_id": tenant_id}]
+        if ObjectId.is_valid(tenant_id):
+            tenant_conds.extend([{"tenantId": ObjectId(tenant_id)}, {"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}])
+        return {"$and": [{"$or": refs}, {"$or": tenant_conds}]}
 
     # FIX: Helper to verify if vehicle has active/ongoing maintenance jobs
     def _has_open_maintenance(self, db, booking: dict[str, Any], tenant_id: str) -> bool:
@@ -844,18 +859,77 @@ class BookingService:
         # FIX: Block vehicle handover if vehicle was put under maintenance while confirmed
         if self._has_open_maintenance(db, booking, tenant_id):
             raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
-        vehicle_id = (booking.get("vehicle_details") or {}).get("id") or booking.get("vehicle")
-        other = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"id": {"$ne": booking_id}}, {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": booking.get("vehicle")}]}]})
+        
+        vehicle_details = booking.get("vehicle_details") or {}
+        vehicle_id = vehicle_details.get("id") or booking.get("vehicle")
+        vehicle_name = vehicle_details.get("name") or booking.get("vehicle")
+
+        vehicle_conds: list[dict[str, Any]] = []
+        if vehicle_id:
+            vehicle_conds.extend([{"vehicle_details.id": vehicle_id}, {"vehicle": vehicle_id}])
+            if ObjectId.is_valid(str(vehicle_id)):
+                vehicle_conds.extend([{"vehicle_details.id": ObjectId(str(vehicle_id))}, {"vehicle": ObjectId(str(vehicle_id))}])
+        if vehicle_name and vehicle_name != vehicle_id:
+            vehicle_conds.extend([{"vehicle_details.name": vehicle_name}, {"vehicle": vehicle_name}])
+
+        t_refs: list[dict[str, Any]] = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
+        if ObjectId.is_valid(tenant_id):
+            t_refs.extend([{"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}, {"tenantId": ObjectId(tenant_id)}])
+
+        b_exclude: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+        if ObjectId.is_valid(booking_id):
+            b_exclude.append({"_id": ObjectId(booking_id)})
+
+        other_query: dict[str, Any] = {
+            "$and": [
+                {"$or": t_refs},
+                {"status": "Active"},
+                {"$nor": b_exclude},
+            ]
+        }
+        if vehicle_conds:
+            other_query["$and"].append({"$or": vehicle_conds})
+
+        other = db["bookings"].find_one(other_query)
         if other:
             raise HTTPException(status_code=409, detail="Vehicle is already held by another active booking.")
+
         now = self._action_time(payload.occurred_at).isoformat()
-        claim_filter = {"$and": [self._vehicle_filter(booking, tenant_id), {"$or": [{"fleetAvailability": "Available"}, {"availability": "Available"}, {"fleetAvailability": {"$exists": False}}, {"availability": {"$exists": False}}]}]}
+        claim_filter = {
+            "$and": [
+                self._vehicle_filter(booking, tenant_id),
+                {
+                    "$or": [
+                        {"fleetAvailability": {"$in": ["Available", "Under Review", "available"]}},
+                        {"availability": {"$in": ["Available", "Under Review", "available"]}},
+                        {"fleetAvailability": {"$exists": False}},
+                        {"availability": {"$exists": False}},
+                        {"fleetAvailability": None},
+                        {"availability": None},
+                    ]
+                },
+                {"fleetAvailability": {"$nin": ["Maintenance", "Rented"]}},
+                {"availability": {"$nin": ["Maintenance", "Rented"]}},
+            ]
+        }
         claimed = db["vehicles"].find_one_and_update(claim_filter, {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now}}, return_document=ReturnDocument.AFTER)
         if not claimed:
-            raise HTTPException(status_code=409, detail="Vehicle is not available for handover.")
+            veh = db["vehicles"].find_one(self._vehicle_filter(booking, tenant_id))
+            if veh:
+                if veh.get("fleetAvailability") == "Maintenance" or veh.get("availability") == "Maintenance":
+                    raise HTTPException(status_code=409, detail="Vehicle is under maintenance and cannot be handed over.")
+                if veh.get("fleetAvailability") == "Rented" or veh.get("availability") == "Rented":
+                    raise HTTPException(status_code=409, detail="Vehicle is already rented.")
+                claimed = db["vehicles"].find_one_and_update(
+                    self._vehicle_filter(booking, tenant_id),
+                    {"$set": {"fleetAvailability": "Rented", "availability": "Rented", "updatedAt": now}},
+                    return_document=ReturnDocument.AFTER,
+                )
+
         updated = db["bookings"].find_one_and_update(self._tenant_filter(booking_id, tenant_id, "Confirmed"), {"$set": {"status": "Active", "handoverAt": now, "handoverNotes": payload.notes, "updated_at": now}}, return_document=ReturnDocument.AFTER)
         if not updated:
-            db["vehicles"].update_one({"_id": claimed["_id"], "fleetAvailability": "Rented"}, {"$set": {"fleetAvailability": "Available", "availability": "Available", "updatedAt": now}})
+            if claimed:
+                db["vehicles"].update_one({"_id": claimed["_id"], "fleetAvailability": "Rented"}, {"$set": {"fleetAvailability": "Available", "availability": "Available", "updatedAt": now}})
             raise HTTPException(status_code=409, detail="Booking is no longer Confirmed; handover was not applied.")
         return self._response_from_doc(updated)
 
@@ -923,8 +997,36 @@ class BookingService:
         if not updated:
             raise HTTPException(status_code=409, detail="Completion requires a Returned booking.")
         vehicle_filter = self._vehicle_filter(updated, tenant_id)
-        vehicle_id = (updated.get("vehicle_details") or {}).get("id") or updated.get("vehicle")
-        holder = db["bookings"].find_one({"$and": [{"$or": [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}]}, {"status": {"$in": ["Active", "Returned"]}}, {"id": {"$ne": booking_id}}, {"$or": [{"vehicle_details.id": vehicle_id}, {"vehicle": updated.get("vehicle")}]}]})
+        vehicle_details = updated.get("vehicle_details") or {}
+        vehicle_id = vehicle_details.get("id") or updated.get("vehicle")
+        vehicle_name = vehicle_details.get("name") or updated.get("vehicle")
+
+        vehicle_conds: list[dict[str, Any]] = []
+        if vehicle_id:
+            vehicle_conds.extend([{"vehicle_details.id": vehicle_id}, {"vehicle": vehicle_id}])
+            if ObjectId.is_valid(str(vehicle_id)):
+                vehicle_conds.extend([{"vehicle_details.id": ObjectId(str(vehicle_id))}, {"vehicle": ObjectId(str(vehicle_id))}])
+        if vehicle_name and vehicle_name != vehicle_id:
+            vehicle_conds.extend([{"vehicle_details.name": vehicle_name}, {"vehicle": vehicle_name}])
+
+        t_refs = [{"tenant_id": tenant_id}, {"vendor_id": tenant_id}, {"tenantId": tenant_id}]
+        if ObjectId.is_valid(tenant_id):
+            t_refs.extend([{"tenant_id": ObjectId(tenant_id)}, {"vendor_id": ObjectId(tenant_id)}, {"tenantId": ObjectId(tenant_id)}])
+        b_exclude: list[dict[str, Any]] = [{"id": booking_id}, {"_id": booking_id}]
+        if ObjectId.is_valid(booking_id):
+            b_exclude.append({"_id": ObjectId(booking_id)})
+
+        holder_query: dict[str, Any] = {
+            "$and": [
+                {"$or": t_refs},
+                {"status": "Active"},
+                {"$nor": b_exclude},
+            ]
+        }
+        if vehicle_conds:
+            holder_query["$and"].append({"$or": vehicle_conds})
+
+        holder = db["bookings"].find_one(holder_query)
         # FIX: On booking completion, set vehicle state to Maintenance if open maintenance exists, otherwise Available
         if not holder:
             vehicle_state = "Maintenance" if self._has_open_maintenance(db, updated, tenant_id) else "Available"

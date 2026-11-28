@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AlertCircle, Check, RefreshCw, X } from 'lucide-react'
+import { AlertCircle, Check, KeyRound, RefreshCw, Smartphone, X } from 'lucide-react'
 import { bookingService } from '../services/bookingService.js'
 
 function localDateTimeNow() {
@@ -25,6 +25,15 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
   const [error, setError] = useState('')
   const [returnResult, setReturnResult] = useState(null)
 
+  // Return OTP states
+  const [returnOtp, setReturnOtp] = useState('')
+  const [otpSent, setOtpSent] = useState(false)
+  const [otpSending, setOtpSending] = useState(false)
+  const [otpVerifying, setOtpVerifying] = useState(false)
+  const [otpVerified, setOtpVerified] = useState(false)
+  const [otpBypassed, setOtpBypassed] = useState(false)
+  const [otpMsg, setOtpMsg] = useState({ type: '', text: '' })
+
   useEffect(() => {
     if (action) {
       setOccurredAt(localDateTimeNow())
@@ -33,6 +42,13 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
       setExtraChargeReason('')
       setError('')
       setReturnResult(null)
+      setReturnOtp('')
+      setOtpSent(false)
+      setOtpSending(false)
+      setOtpVerifying(false)
+      setOtpVerified(false)
+      setOtpBypassed(false)
+      setOtpMsg({ type: '', text: '' })
     }
   }, [action, booking?.id])
 
@@ -44,6 +60,68 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
   const maxDateTime = localDateTimeNow()
   const amount = Number(extraCharges || 0)
   const existingBill = booking.finalBill
+
+  const phone = booking.phone || booking.customer_details?.phone || booking.customerPhone || ''
+  const customerName = booking.customer || booking.customer_details?.name || 'Customer'
+  const vehicleName = booking.vehicle || booking.vehicle_details?.name || ''
+
+  async function handleSendOtp() {
+    if (!phone) {
+      setOtpMsg({ type: 'error', text: 'No phone number linked to this booking.' })
+      return
+    }
+    setOtpSending(true)
+    setOtpMsg({ type: '', text: '' })
+    try {
+      await bookingService.sendBookingOtp?.({
+        phone,
+        purpose: 'return',
+        booking_id: booking.id,
+        customer_name: customerName,
+        vehicle_name: vehicleName,
+      })
+      setOtpSent(true)
+      setOtpMsg({ type: 'success', text: `Return OTP sent to ${phone} via SMS.` })
+    } catch (err) {
+      setOtpMsg({ type: 'error', text: err?.message || 'Failed to send return OTP.' })
+    } finally {
+      setOtpSending(false)
+    }
+  }
+
+  async function handleVerifyOtp(codeToVerify) {
+    const code = (codeToVerify !== undefined ? codeToVerify : returnOtp).trim()
+    if (!code || code.length < 4) {
+      setOtpMsg({ type: 'error', text: 'Please enter the 6-digit OTP code.' })
+      return false
+    }
+    setOtpVerifying(true)
+    setOtpMsg({ type: '', text: '' })
+    try {
+      await bookingService.verifyBookingOtp?.({
+        phone,
+        purpose: 'return',
+        otp: code,
+        booking_id: booking.id,
+      })
+      setOtpVerified(true)
+      setOtpMsg({ type: 'success', text: 'Return OTP verified successfully! ✓' })
+      return true
+    } catch (err) {
+      setOtpMsg({ type: 'error', text: err?.message || 'Invalid or expired OTP code.' })
+      return false
+    } finally {
+      setOtpVerifying(false)
+    }
+  }
+
+  function handleOtpChange(e) {
+    const cleaned = e.target.value.replace(/\D/g, '')
+    setReturnOtp(cleaned)
+    if (cleaned.length === 6 && !otpVerifying && !otpVerified) {
+      handleVerifyOtp(cleaned)
+    }
+  }
 
   async function doneWithReturn() {
     await onSuccess?.(returnResult)
@@ -61,6 +139,18 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
     if (isReturn && (amount < 0 || (amount > 0 && !extraChargeReason.trim()))) {
       setError(amount < 0 ? 'Extra charges cannot be negative.' : 'A reason is required for manual extra charges.')
       return
+    }
+    if (isReturn && phone && !otpVerified && !otpBypassed) {
+      if (returnOtp.length === 6) {
+        const verified = await handleVerifyOtp(returnOtp)
+        if (!verified) {
+          setError('Return OTP verification failed. Please enter the correct OTP or skip OTP if customer is offline.')
+          return
+        }
+      } else {
+        setError('Please verify the Return OTP sent to customer mobile, or skip OTP verification if phone is unreachable.')
+        return
+      }
     }
     setSubmitting(true)
     try {
@@ -116,6 +206,88 @@ export function BookingLifecycleDialog({ action, booking, onClose, onSuccess }) 
           <label className="text-xs font-medium text-slate-700">Notes<textarea aria-label="Notes" value={notes} onChange={(event) => setNotes(event.target.value)} disabled={submitting} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" /></label>
         </div>
         {isReturn && <>
+          {/* OTP Verification Card for Return */}
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50/50 p-3.5 text-xs text-slate-700">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Smartphone size={16} className="text-amber-700 shrink-0" />
+                <div>
+                  <span className="font-semibold text-slate-900">Return Confirmation Mobile OTP</span>
+                  {phone ? (
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Customer Phone: <span className="font-semibold text-slate-800">{phone}</span>
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 mt-0.5">No phone number attached to this booking.</p>
+                  )}
+                </div>
+              </div>
+              {phone && (
+                otpVerified ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-800">
+                    <Check size={12} /> Verified ✓
+                  </span>
+                ) : otpBypassed ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-slate-200 px-2.5 py-1 text-[11px] font-medium text-slate-700">
+                    Skipped (Offline)
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleSendOtp}
+                    disabled={otpSending || submitting}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-900 shadow-xs hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    {otpSending ? <RefreshCw size={12} className="animate-spin" /> : <KeyRound size={12} />}
+                    {otpSent ? 'Resend OTP' : 'Send Return OTP'}
+                  </button>
+                )
+              )}
+            </div>
+
+            {phone && !otpVerified && !otpBypassed && (
+              <div className="mt-2.5 flex items-center justify-between border-t border-amber-200/60 pt-2 text-[11px]">
+                <span>Bike return confirm karne ke liye customer ke phone par OTP bhejein.</span>
+                <button
+                  type="button"
+                  onClick={() => { setOtpBypassed(true); setOtpMsg({ type: '', text: '' }) }}
+                  className="text-slate-500 underline hover:text-slate-800 cursor-pointer"
+                >
+                  Skip OTP (Customer offline)
+                </button>
+              </div>
+            )}
+
+            {otpMsg.text && (
+              <div className={`mt-2 flex items-center gap-1.5 text-xs font-medium ${otpMsg.type === 'error' ? 'text-rose-700' : 'text-emerald-800'}`}>
+                {otpMsg.type === 'error' ? <AlertCircle size={14} /> : <Check size={14} />}
+                {otpMsg.text}
+              </div>
+            )}
+
+            {phone && otpSent && !otpVerified && !otpBypassed && (
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="6-digit OTP"
+                  maxLength={6}
+                  value={returnOtp}
+                  onChange={handleOtpChange}
+                  disabled={otpVerifying || submitting}
+                  className="h-9 w-36 rounded-lg border border-slate-300 bg-white px-3 text-center font-mono text-sm tracking-widest outline-none focus:border-amber-600 focus:ring-2 focus:ring-amber-100"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleVerifyOtp()}
+                  disabled={otpVerifying || returnOtp.length < 4 || submitting}
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-amber-600 px-3.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-700 disabled:opacity-50"
+                >
+                  {otpVerifying ? <RefreshCw size={13} className="animate-spin" /> : 'Verify Code'}
+                </button>
+              </div>
+            )}
+          </div>
+
           <p className="mt-4 text-xs text-slate-500">Late charges are calculated by the backend using the booked return time.</p>
           <div className="mt-3 grid grid-cols-2 gap-3"><label className="text-xs font-medium text-slate-700">Manual extra charge<input aria-label="Manual extra charge" type="number" min="0" step="0.01" value={extraCharges} onChange={(event) => setExtraCharges(event.target.value)} disabled={submitting} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" /></label><label className="text-xs font-medium text-slate-700">Reason<input aria-label="Extra charge reason" value={extraChargeReason} onChange={(event) => setExtraChargeReason(event.target.value)} disabled={submitting} className="mt-1 block w-full rounded-lg border border-slate-200 px-3 py-2 text-sm" /></label></div>
           {existingBill && <div className="mt-4 grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 text-xs text-slate-600"><span>Base: {currency(existingBill.base)}</span><span>Discount: {currency(existingBill.discount)}</span><span>Deposit: {currency(existingBill.deposit)}</span><span>Additional: {currency(existingBill.additionalCharges)}</span><span>Final: {currency(existingBill.finalTotal)}</span><span>Outstanding: {currency(existingBill.outstanding)}</span></div>}
