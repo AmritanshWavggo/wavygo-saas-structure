@@ -32,6 +32,11 @@ function formatDate(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }
 
+function formatTime(date) {
+  const d = date || new Date()
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 function getRentalDays(start, end) {
   if (!start || !end) return 1
   const [sy, sm, sd] = start.split('-').map(Number)
@@ -87,6 +92,7 @@ function AddBooking() {
   const { vehicles, customers, bookings, addRecord, syncOfflineBookings, syncVehicles, syncCustomers, bookingInterval, intervalsOverlap } = useDemoData()
   const today = formatDate(new Date())
   const tomorrow = formatDate(new Date(Date.now() + 86_400_000))
+  const currentTime = formatTime(new Date())
 
   const [step, setStep] = useState(0)
   const [selectedVehicleId, setSelectedVehicleId] = useState('')
@@ -96,8 +102,8 @@ function AddBooking() {
   const [rental, setRental] = useState({
     startDate: today,
     endDate: tomorrow,
-    pickupTime: '10:00',
-    returnTime: '10:00',
+    pickupTime: currentTime,
+    returnTime: currentTime,
     pickupLocation: '',
     addOns: false,
     discount: '0',
@@ -632,7 +638,17 @@ function AddBooking() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Pickup Time</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">Pickup Time</label>
+                      <button
+                        type="button"
+                        onClick={() => updateRental('pickupTime', formatTime(new Date()))}
+                        className="text-[10px] font-semibold text-emerald-700 hover:underline cursor-pointer"
+                        title="Set to current time"
+                      >
+                        Now
+                      </button>
+                    </div>
                     <input
                       type="time"
                       value={rental.pickupTime}
@@ -651,7 +667,17 @@ function AddBooking() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Return Time</label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-[11px] font-semibold text-slate-600">Return Time</label>
+                      <button
+                        type="button"
+                        onClick={() => updateRental('returnTime', rental.pickupTime)}
+                        className="text-[10px] font-semibold text-emerald-700 hover:underline cursor-pointer"
+                        title="Match pickup time"
+                      >
+                        Match Pickup
+                      </button>
+                    </div>
                     <input
                       type="time"
                       value={rental.returnTime}
