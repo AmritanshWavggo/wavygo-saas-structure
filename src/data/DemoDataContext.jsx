@@ -105,15 +105,14 @@ export function intervalsOverlap(startA, endA, startB, endB) {
 }
 
 export function DemoDataProvider({ children }) {
-  const isAuth = authService.isAuthenticated()
   const [data, setData] = useState({
-    vehicles: isAuth ? [] : initialVehicles,
-    customers: isAuth ? [] : initialCustomers,
-    bookings: isAuth ? [] : initialBookings,
-    payments: isAuth ? [] : initialPayments,
-    documents: isAuth ? [] : initialDocuments,
-    maintenance: isAuth ? [] : initialMaintenance,
-    staff: isAuth ? [] : initialStaff,
+    vehicles: [],
+    customers: [],
+    bookings: [],
+    payments: [],
+    documents: [],
+    maintenance: [],
+    staff: [],
     expenses: [],
     notifications: [],
     financeOverview: null,
@@ -124,10 +123,14 @@ export function DemoDataProvider({ children }) {
     auditLogs: [],
   })
 
+  const ownerName =
+    (typeof localStorage !== 'undefined' && (localStorage.getItem('wavygo-owner-name') || localStorage.getItem('wavygo-business-name'))) ||
+    (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('wavygo-user-email')) ||
+    'Vendor Partner'
+
   const [currentDemoRole, setCurrentDemoRoleState] = useState('Admin')
-  const roleNames = { Admin: 'Demo Admin', Founder: 'Demo Founder', Manager: 'Demo Manager', Employee: 'Demo Employee', Intern: 'Demo Intern' }
-  const currentDemoUser = { name: roleNames[currentDemoRole], role: currentDemoRole }
-  function setCurrentDemoRole(role) { if (Object.prototype.hasOwnProperty.call(roleNames, role)) setCurrentDemoRoleState(role) }
+  const currentDemoUser = { name: ownerName, role: 'Owner' }
+  function setCurrentDemoRole(role) { setCurrentDemoRoleState(role) }
 
   const [vehiclesTotal, setVehiclesTotal] = useState(null)
   const [vehiclesLoading, setVehiclesLoading] = useState(true)
@@ -549,6 +552,7 @@ export function DemoDataProvider({ children }) {
 
   useEffect(() => {
     async function init() {
+      if (!authService.isAuthenticated()) return
       await Promise.allSettled([
         syncVehicles(),
         syncCustomers(),

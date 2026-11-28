@@ -20,8 +20,7 @@ export async function apiFetch(endpoint, options = {}) {
   const token =
     typeof localStorage !== 'undefined'
       ? localStorage.getItem('access_token') ||
-        sessionStorage.getItem('access_token') ||
-        (sessionStorage.getItem('wavygo-demo-access') ? 'wavygo-demo-access' : null)
+        sessionStorage.getItem('access_token')
       : null
 
   const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData
@@ -44,7 +43,6 @@ export async function apiFetch(endpoint, options = {}) {
       }
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.removeItem('access_token')
-        sessionStorage.removeItem('wavygo-demo-access')
       }
     }
 
